@@ -580,6 +580,7 @@ absl::StatusOr<PlayerFrameSelectionReport> SelectPlayerFrames(
   plan.settings = settings;
   plan.sources = sources;
   plan.context = context;
+  plan.context["camera_display_orientation"] = "recorded";
   for (size_t index : selected)
     plan.selected.push_back(observations[index]);
   auto fingerprint = PlayerFrameSelectionFingerprint(plan);

@@ -5,7 +5,9 @@
 #include <cmath>
 #include <iostream>
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "yaml-cpp/yaml.h"
 
@@ -148,6 +150,62 @@ int main() {
     expect(
         !actual.empty() && cv::norm(expected_pixels, actual, cv::NORM_INF) == 0,
         "Offline calibration must see the reflected pixels before feature extraction");
+  }
+  const auto rotated = game / "rotated.mp4";
+  expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-display_rotation",
+           "180",
+           "-i",
+           video.string(),
+           "-c",
+           "copy",
+           "-tag:v",
+           "avc3",
+           rotated.string()},
+          "",
+          {},
+          {}) == 0,
+      "Create a rotated H.264 source with an in-band parameter set sample entry");
+  auto tagged = YAML::Clone(config);
+  tagged["game"]["videos"]["left"][0] = "rotated.mp4";
+  StitchInputCameras tagged_cameras{{"rotated.mp4", {108, 70, {}}}};
+  for (bool horizontal : {false, true}) {
+    for (bool vertical : {false, true}) {
+      tagged_cameras.at("rotated.mp4").flip = {horizontal, vertical};
+      tagged["stitching"]["input_cameras"] = WriteStitchInputCameras(tagged_cameras);
+      auto pairs = EndRelativeCalibrationInputs(game, tagged, 1, {});
+      const auto output = game / ("rotated-" + std::to_string(horizontal) + std::to_string(vertical) + ".png");
+      if (!pairs.ok() || !pairs->front().left(output).ok())
+        return 1;
+      auto expected = cv::imread((game / "0-0.png").string(), cv::IMREAD_UNCHANGED);
+      if (!horizontal || !vertical)
+        cv::flip(expected, expected, horizontal ? 0 : vertical ? 1 : -1);
+      const auto actual = cv::imread(output.string(), cv::IMREAD_UNCHANGED);
+      expect(
+          !actual.empty() && cv::norm(expected, actual, cv::NORM_INF) == 0,
+          "Calibration PNG must apply its display rotation before the manual corrections");
+    }
+  }
+  {
+    auto interrupted = YAML::Clone(tagged);
+    interrupted["stitching"]["calibration_frame_selection"]["context"]["decode_anchor_ns"] = "0";
+    expect(
+        !HuginProject::CheckSavedRecordingGeometry(game, interrupted).ok(),
+        "An interrupted calibration cannot reuse old selected inputs for tagged cameras");
+    interrupted["stitching"]["calibration_frame_selection"]["context"]["camera_display_orientation"] = "recorded";
+    expect(
+        HuginProject::CheckSavedRecordingGeometry(game, interrupted).ok(),
+        "Fresh selected inputs are valid before the first canvas exists");
+    const auto oriented_context = CalibrationMatchSourceContext(interrupted, game);
+    std::filesystem::copy_file(video, rotated, std::filesystem::copy_options::overwrite_existing);
+    const auto raw_context = CalibrationMatchSourceContext(interrupted, game);
+    expect(
+        oriented_context.ok() && raw_context.ok() && *oriented_context != *raw_context,
+        "Retained manual match coordinates must bind the recording display convention");
   }
   PlayerFrameSelectionSettings selected_settings;
   selected_settings.frame_count = 2;

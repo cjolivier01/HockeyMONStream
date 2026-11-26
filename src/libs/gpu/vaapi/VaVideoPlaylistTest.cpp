@@ -57,6 +57,34 @@ int main(int argc, char** argv) {
         2,
         10 * GST_SECOND,
         10 * GST_MSECOND};
+    {
+      const auto upright = root.path / "quadrants.mp4", tagged = root.path / "upside-down.mp4";
+      hm::media::test::Ffmpeg(
+          {"-f",
+           "lavfi",
+           "-i",
+           "color=c=black:s=384x192:r=25,drawbox=x=192:y=96:w=192:h=96:color=white:t=fill",
+           "-frames:v",
+           "5",
+           "-c:v",
+           "libx264",
+           "-colorspace",
+           "bt709",
+           "-color_trc",
+           "bt709",
+           "-color_primaries",
+           "bt709",
+           upright.string()});
+      hm::media::test::Ffmpeg({"-display_rotation", "180", "-i", upright.string(), "-c", "copy", tagged.string()});
+      auto mixed = Take(hm::gpu::VaVideoPlaylist::Create(config, {upright, tagged}, {}));
+      Status(mixed->Seek(0));
+      for (unsigned i = 0; i < 10; ++i) {
+        const auto frame = Frame(*mixed, i);
+        Check(frame.display.nvFlipMethod() == (i < 5 ? 0 : 2), "VA frame lost its chapter display matrix");
+      }
+      Status(mixed->Seek(0));
+      Check(Frame(*mixed, 0).display.nvFlipMethod() == 0, "Seek retained the previous display matrix");
+    }
     auto playlist = Take(hm::gpu::VaVideoPlaylist::Create(config, {black, white, offset}, {}));
     Check(playlist->duration() == 600 * GST_MSECOND, "Playlist used container durations");
     Check(!playlist->Read().ok(), "Unpositioned playlist read accepted");

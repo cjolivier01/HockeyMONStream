@@ -475,7 +475,13 @@ int run_pipeline(
   g_main_loop_run(loop);
 
   if (source_parent) {
-    cancel_uri_playlist_frame_barrier(source_parent);
+    if (bus_state.exit_code == 0) {
+      // Match CLI shutdown after EOS: release the last decoder and its capture
+      // pool before destroying the pipeline and unloading the Jetson SDK.
+      stop_uri_playlist_sources_gracefully(source_parent);
+    } else {
+      cancel_uri_playlist_frame_barrier(source_parent);
+    }
   }
   gst_element_set_state(pipeline, GST_STATE_NULL);
   if (bus_state.timeout_id) {
@@ -1600,11 +1606,26 @@ int run_n_uri_playlists(const std::string& uri, guint count, bool unequal = fals
   return 0;
 }
 
-int run_mixed_packed_inputs(const fs::path& root) {
+int run_mixed_packed_inputs(const fs::path& root, bool tagged_chapter = false) {
   NvDsSourceConfig configs[2]{};
   for (guint i = 0; i < 2; ++i) {
     const auto file = root / ("packed-" + std::to_string(i) + ".mp4");
-    configure_uri_multiple_source(configs[i], {to_file_uri(file)}, i);
+    std::vector<std::string> chapters{to_file_uri(file)};
+    if (tagged_chapter) {
+      const auto rotated = root / ("rotated-" + std::to_string(i) + ".mp4");
+      const auto portrait = root / "portrait.mp4";
+      if (i && !make_synthetic_mp4(portrait, 1, 0, 440, true, 0, "216x384"))
+        return 1;
+      if (!run_shell(
+              "ffmpeg -v error -y -display_rotation " + std::string(i ? "90" : "180") + " -i " +
+              shell_quote(i ? portrait : file) + " -c copy " + shell_quote(rotated)))
+        return 1;
+      if (i)
+        chapters.insert(chapters.begin(), to_file_uri(rotated));
+      else
+        chapters.push_back(to_file_uri(rotated));
+    }
+    configure_uri_multiple_source(configs[i], chapters, i);
     configs[i].stitch_input_width = i ? 384 : 512;
     configs[i].stitch_input_height = i ? 216 : 288;
     configs[i].video_format = g_strdup("RGB10A2_LE");
@@ -1619,6 +1640,32 @@ int run_mixed_packed_inputs(const fs::path& root) {
     g_object_get(sub->nvvidconv, "output-buffers", &buffers, nullptr);
     if (buffers != 3)
       return 2;
+  }
+  struct Observed {
+    GstElement* converter{};
+    std::vector<int> methods;
+  } observed[2];
+  if (tagged_chapter) {
+    for (int i = 0; i < 2; ++i) {
+      auto& item = observed[i];
+      item.converter = sources.sub_bins[i].camera_input_flip;
+      if (!item.converter)
+        return 2;
+      auto* pad = gst_element_get_static_pad(item.converter, "src");
+      gst_pad_add_probe(
+          pad,
+          GST_PAD_PROBE_TYPE_BUFFER,
+          [](GstPad*, GstPadProbeInfo*, gpointer data) {
+            auto& item = *static_cast<Observed*>(data);
+            int method = -1;
+            g_object_get(item.converter, "flip-method", &method, nullptr);
+            item.methods.push_back(method);
+            return GST_PAD_PROBE_OK;
+          },
+          &item,
+          nullptr);
+      gst_object_unref(pad);
+    }
   }
   g_object_set(
       sources.streammux,
@@ -1649,8 +1696,18 @@ int run_mixed_packed_inputs(const fs::path& root) {
   const int status = run_pipeline(pipeline, 30, &sources);
   if (status)
     std::cerr << "Packed frames observed: " << stats.batches << "\n";
-  return status || stats.batches != 15 || stats.invalid_metadata_batches || stats.missing_decoded_sequence_meta ||
-          stats.decode_mux_sequence_mismatches || !stats.exact_frame_pairs
+  if (tagged_chapter) {
+    for (int i = 0; i < 2; ++i) {
+      std::vector<int> expected(15, i ? 7 : 4);
+      expected.insert(expected.end(), 15, 6);
+      if (observed[i].methods != expected) {
+        std::cerr << "Camera " << i << " applied the wrong display transform at a chapter boundary\n";
+        return 4;
+      }
+    }
+  }
+  return status || stats.batches != (tagged_chapter ? 30 : 15) || stats.invalid_metadata_batches ||
+          stats.missing_decoded_sequence_meta || stats.decode_mux_sequence_mismatches || !stats.exact_frame_pairs
       ? 4
       : 0;
 }
@@ -2009,7 +2066,8 @@ int main(int argc, char** argv) {
   const bool mixed_only = argc == 2 && std::string(argv[1]) == "--mixed-sources-only";
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
   const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
-  if (!decoder_matrix_only && !startup_seek_only && !mixed_only && !mux_inputs_only) {
+  const bool display_only = argc == 2 && std::string(argv[1]) == "--display-chapters-only";
+  if (!decoder_matrix_only && !startup_seek_only && !mixed_only && !display_only && !mux_inputs_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -2032,13 +2090,17 @@ int main(int argc, char** argv) {
     fs::remove_all(tmpdir);
     return 0;
   }
-  if (mixed_only || (!decoder_matrix_only && !startup_seek_only)) {
+  if (!decoder_matrix_only && !startup_seek_only) {
     for (guint i = 0; i < 2; ++i)
       if (!make_synthetic_mp4(
               tmpdir / ("packed-" + std::to_string(i) + ".mp4"), 1, 0, 440, true, 0, i ? "384x216" : "512x288"))
         return 1;
-    if (const auto result = run_mixed_packed_inputs(tmpdir))
+    if (const auto result = run_mixed_packed_inputs(tmpdir, true))
       return result;
+    if (display_only) {
+      fs::remove_all(tmpdir);
+      return 0;
+    }
     const auto fast = tmpdir / "fast.mp4";
     if (!make_synthetic_mp4(a0, 1, 0, 440, false, 0, "256x144", 15, true) ||
         !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30, true))

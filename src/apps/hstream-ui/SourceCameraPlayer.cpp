@@ -239,17 +239,12 @@ struct SourceCameraPlayer::Impl {
     // CUDA-device RGBA. Conversion and presentation both remain on the GPU.
     g_object_set(convert, "compute-hw", 1, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
 #endif
+    const auto transform = item.track.display.corrected(flip);
 #ifdef HSTREAM_USE_HIP
-    if (!output && flip.enabled())
-      gst_util_set_object_arg(
-          G_OBJECT(sink),
-          "rotate-method",
-          flip.horizontal && flip.vertical ? "rotate-180"
-              : flip.horizontal            ? "horizontal-flip"
-                                           : "vertical-flip");
+    if (!output)
+      g_object_set(sink, "rotate-method", transform.gstOrientationMethod(), nullptr);
 #else
-    if (flip.enabled())
-      g_object_set(convert, "flip-method", flip.nvFlipMethod(), nullptr);
+    g_object_set(convert, "flip-method", transform.nvFlipMethod(), nullptr);
 #endif
     g_object_set(filter, "caps", caps, nullptr);
     gst_caps_unref(caps);

@@ -16,13 +16,17 @@ an arbitrary offset.
 **Flip horizontally** mirrors the recording left to right. **Flip vertically** swaps
 top and bottom. Select both for a 180° rotation. Each camera’s Input tab applies
 its choices to the decoded camera preview and to the source frames used for rink
-orientation, calibration and stitching. Changing either box updates a paused
-preview at its current position. Save Preset retains the choices for this recording.
+orientation, calibration and stitching. Each chapter’s MP4 display matrix makes the image upright first.
+The two boxes then reflect that displayed image, including during automatic
+Left/Right detection. For upside-down cameras tagged with a 180° display
+rotation, leave both boxes unchecked. Changing either box updates a paused preview at its current
+position. Save Preset retains the choices for this recording.
 
 The optional `flip_horizontal` and `flip_vertical` booleans belong to that
 recording’s prescription under `stitching.input_cameras`. The bundled empty map
-leaves every recording in its original orientation. A flip change invalidates
-calibration and retained frame pairs.
+uses each chapter’s recorded display orientation. A flip change invalidates
+calibration and retained frame pairs. Saved calibration made before display
+rotation support must be regenerated from input for tagged recordings.
 
 ## Configuration and ownership
 

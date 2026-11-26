@@ -80,9 +80,16 @@ int main() {
       "automatic mixed-size optics must refine both cameras independently");
   std::vector<std::string> fields{
       "version=25", "source-0-width=7680", "source-0-height=4320", "source-1-width=3840", "source-1-height=2160"};
-  auto sizes = ReadStitchSourceSizeSuffix(fields);
+  auto tagged = fields;
+  tagged.front() = "version=29";
+  bool oriented = false;
+  auto tagged_sizes = ReadStitchSourceSizeSuffix(tagged, &oriented);
   ok &= expect(
-      sizes.ok() && fields == std::vector<std::string>{"version=21"} &&
+      tagged_sizes.ok() && oriented && tagged.front() == "version=21",
+      "Tagged camera solve must preserve its display-orientation marker and dimensions");
+  auto sizes = ReadStitchSourceSizeSuffix(fields, &oriented);
+  ok &= expect(
+      sizes.ok() && !oriented && fields == std::vector<std::string>{"version=21"} &&
           CheckStitchSourceSizes(*sizes, {{{7680, 4320}, {3840, 2160}}}).ok() &&
           !CheckStitchSourceSizes(*sizes, {{{3840, 2160}, {7680, 4320}}}).ok(),
       "provenance must bind both decoded sizes in calibration order");

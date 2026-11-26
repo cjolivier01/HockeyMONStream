@@ -1494,7 +1494,9 @@ the rightmost strips, repeated seeks and chapter replacement. The AMD branch
 passes a local compile check; this pixel regression still needs AMD hardware
 qualification because `ripper` remains unreachable.
 
-Source-bound flips run in the AMD Program graph's first HIP color conversion.
+Each VA frame carries its chapter’s display matrix into the first HIP color
+conversion. This kernel rotates the image and applies the optional horizontal
+and vertical corrections as it writes the stitcher input.
 On the Radeon RX 9060 XT in `ripper`, the seven-format conversion test covers
 both axes, separately and together. With `GST_GL_PLATFORM=egl`, the standalone
 VA camera player also matches a software-decoded asymmetric H.264 frame after

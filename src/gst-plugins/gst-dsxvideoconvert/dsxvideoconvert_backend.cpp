@@ -1081,7 +1081,10 @@ bool DsxVideoConvertBackend::transform(
     }
 
     std::vector<NvBufSurfTransformRect> source_rectangles(batch_size);
-    std::vector<NvBufSurfTransformRect> destination_rectangles(batch_size);
+    // Jetson normalizes destination crops across batchSize, even when numFilled
+    // is smaller. Keep crop storage for every output slot; only filled input
+    // frames are transformed and published.
+    std::vector<NvBufSurfTransformRect> destination_rectangles(output_surface->batchSize);
     const guint input_width = GST_VIDEO_INFO_WIDTH(&input_info_);
     const guint input_height = GST_VIDEO_INFO_HEIGHT(&input_info_);
     const guint output_width = GST_VIDEO_INFO_WIDTH(&output_info_);
@@ -1117,10 +1120,12 @@ bool DsxVideoConvertBackend::transform(
         source_rectangles[index].left = source_left;
         source_rectangles[index].width = source_width;
         source_rectangles[index].height = source_height;
-        destination_rectangles[index].top = destination_top;
-        destination_rectangles[index].left = destination_left;
-        destination_rectangles[index].width = destination_width;
-        destination_rectangles[index].height = destination_height;
+      }
+      for (auto& rectangle : destination_rectangles) {
+        rectangle.top = destination_top;
+        rectangle.left = destination_left;
+        rectangle.width = destination_width;
+        rectangle.height = destination_height;
       }
 
       NvBufSurfTransformParams transform_params{};

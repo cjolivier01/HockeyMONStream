@@ -1,9 +1,38 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "camera_display_caps",
+    hdrs = ["CameraDisplayCaps.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "camera_display_caps_test",
+    srcs = ["CameraDisplayCapsTest.cpp"],
+    deps = [":camera_display_caps"],
+)
+
+cc_library(
     name = "frame_flip",
     hdrs = ["FrameFlip.h"],
     include_prefix = "hstream/src/libs/media",
+)
+
+cc_library(
+    name = "display_transform_headers",
+    hdrs = ["DisplayTransform.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = [":frame_flip"],
+)
+
+cc_library(
+    name = "display_transform",
+    srcs = ["DisplayTransform.cpp"],
+    hdrs = ["DisplayMatrix.h"],
+    include_prefix = "hstream/src/libs/media",
+    linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec"],
+    deps = [":display_transform_headers", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_library(
@@ -49,7 +78,7 @@ cc_library(
     hdrs = ["Mp4VideoTrack.h"],
     include_prefix = "hstream/src/libs/media",
     linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
-    deps = ["@com_google_absl//absl/status:statusor"],
+    deps = [":display_transform", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_library(

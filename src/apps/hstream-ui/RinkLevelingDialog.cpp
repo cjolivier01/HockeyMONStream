@@ -432,14 +432,10 @@ void RinkLevelingDialog::loadSnapshot() {
       load_error_ = "Camera image dimensions differ from the saved calibration. Recalibrate before leveling.";
       return;
     }
-    int version = fields.value("version").toInt();
-    if (version >= 22 && version <= 25) {
-      if (!sizes->has_value()) {
-        load_error_ = "The saved calibration has no source dimensions. Recalibrate before leveling.";
-        return;
-      }
-      version -= 4;
-    }
+    // The shared suffix reader has validated the source sizes and normalized
+    // both generations of size-aware provenance to their prior layout.
+    const auto version_line = lines.empty() ? QString() : QString::fromStdString(lines.front());
+    int version = version_line.startsWith("version=") ? version_line.mid(8).toInt() : 0;
     if (version >= 18 && version <= 21) {
       if (!hm::stitching::ParseControlPointSelection(fields.value("control-point-selection").toStdString()).ok()) {
         load_error_ =

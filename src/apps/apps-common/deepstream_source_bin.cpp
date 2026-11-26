@@ -26,11 +26,11 @@
 #include <vector>
 
 #include <cuda_runtime_api.h>
-#include <nvbufsurface.h>
 #include <gst/audio/audio.h>
 #include <gst/pbutils/pbutils.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include <gst/rtsp/gstrtsptransport.h>
+#include <nvbufsurface.h>
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 #include "hstream/src/apps/apps-common/DecoderPadLink.h"
@@ -38,6 +38,7 @@
 #include "hstream/src/apps/apps-common/UriPlaylistCapturePoolDrain.h"
 #include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
 #include "hstream/src/libs/common/ShutdownWatchdog.h"
+#include "hstream/src/libs/media/CameraDisplayCaps.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
@@ -147,6 +148,7 @@ struct UriListPadProbeData {
   guint uri_index;
   GstClockTime base;
   gboolean is_video;
+  gboolean transpose;
   GstClockTime initial_offset;
   GstSegment physical_segment;
   GstClockTime video_origin;
@@ -2378,7 +2380,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       gint width = 0, height = 0;
       const auto* format = gst_caps_get_structure(caps, 0);
       if (!gst_structure_get_int(format, "width", &width) || !gst_structure_get_int(format, "height", &height) ||
-          width != bin->config->stitch_input_width || height != bin->config->stitch_input_height)
+          (probe_data->transpose ? height : width) != bin->config->stitch_input_width ||
+          (probe_data->transpose ? width : height) != bin->config->stitch_input_height)
         return fail_uri_playlist_initial_positioning(bin, "decoded camera dimensions differ from the recording header");
     }
     if (probe_data->is_video && bin->config && bin->config->frame_decimation > 0 &&
@@ -2468,31 +2471,43 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // EOS after one camera's entire playlist is permanently exhausted.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
-        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
-      GstCaps* chapter_caps = nullptr;
-      gst_event_parse_caps(event, &chapter_caps);
-      GstPad* tee_sink = uri_video_input_pad(bin);
-      GstCaps* logical_caps = tee_sink ? gst_pad_get_current_caps(tee_sink) : nullptr;
-      const gboolean caps_match = chapter_caps && logical_caps && gst_caps_is_equal(chapter_caps, logical_caps);
-      if (logical_caps) {
-        gst_caps_unref(logical_caps);
+    if (probe_data->is_video && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps* raw = nullptr;
+      gst_event_parse_caps(event, &raw);
+      // Keep a reference in display coordinates across decoder replacements.
+      // A portrait-coded chapter may display on the same grid as a landscape one.
+      GstCaps* displayed = hm::media::CameraDisplayCaps(raw, probe_data->transpose);
+      if (probe_data->uri_index == bin->uri_playlist_initial_uri_index) {
+        g_object_set_data_full(
+            G_OBJECT(bin->tee),
+            "hstream-camera-display-caps",
+            displayed,
+            reinterpret_cast<GDestroyNotify>(gst_caps_unref));
+      } else {
+        auto* previous = static_cast<GstCaps*>(g_object_get_data(G_OBJECT(bin->tee), "hstream-camera-display-caps"));
+        const bool compatible = previous && gst_caps_is_equal(previous, displayed);
+        gst_caps_unref(displayed);
+        if (!compatible) {
+          cancel_uri_playlist_source(bin, TRUE);
+          GST_ELEMENT_ERROR(
+              bin->src_elem,
+              STREAM,
+              FORMAT,
+              ("Camera chapter video format changed"),
+              ("source=%u uri_index=%u", bin->source_id, probe_data->uri_index));
+          return GST_PAD_PROBE_DROP;
+        }
+        GstPad* input = uri_video_input_pad(bin);
+        GstCaps* accepted = input ? gst_pad_get_current_caps(input) : nullptr;
+        const bool needs_new_input_caps = bin->camera_input_flip && accepted && !gst_caps_is_equal(accepted, raw);
+        if (accepted)
+          gst_caps_unref(accepted);
+        if (input)
+          gst_object_unref(input);
+        // Equal CAPS remain sticky. A changed coded grid must reach the GPU
+        // converter so it renegotiates its input before the first new frame.
+        return needs_new_input_caps ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
       }
-      if (tee_sink) {
-        gst_object_unref(tee_sink);
-      }
-      if (!caps_match) {
-        cancel_uri_playlist_source(bin, TRUE);
-        GST_ELEMENT_ERROR(
-            bin->src_elem,
-            STREAM,
-            FORMAT,
-            ("Camera chapter video format changed"),
-            ("source=%u uri_index=%u", bin->source_id, probe_data->uri_index));
-      }
-      // Equal caps are already sticky on the logical source. Re-emitting them can make nvstreammux close a batch at
-      // a file boundary; changed caps are a hard error because the playlist can no longer be one lossless stream.
-      return GST_PAD_PROBE_DROP;
     }
     if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
         GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
@@ -2831,6 +2846,13 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       probe_data->base = bin->prev_accumulated_base;
       probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
+      if (bin->camera_input_flip) {
+        const auto* methods = static_cast<const std::vector<int>*>(
+            g_object_get_data(G_OBJECT(bin->camera_input_flip), "hstream-camera-transforms"));
+        const int method = (*methods)[probe_data->uri_index];
+        probe_data->transpose = method % 2;
+        g_object_set(bin->camera_input_flip, "flip-method", method, nullptr);
+      }
       if (bin->config && bin->config->frame_decimation > 0)
         hm::uri_playlist_internal::discover_uri_playlist_duration(
             bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
@@ -4426,11 +4448,46 @@ done:
   return ret;
 }
 
+static absl::StatusOr<std::vector<int>> camera_chapter_transforms(
+    const NvDsSrcBin& bin,
+    const NvDsSourceConfig& config) {
+  // Native method order is shared with nvvideoconvert's flip-method property.
+  constexpr hm::media::DisplayTransform corrections[] = {
+      {},
+      {true, {false, true}},
+      {false, {true, true}},
+      {true, {true, false}},
+      {false, {true, false}},
+      {true, {true, true}},
+      {false, {false, true}},
+      {true, {}}};
+  if (config.camera_input_flip < 0 || config.camera_input_flip >= int(std::size(corrections)))
+    return absl::InvalidArgumentError("Invalid camera input flip method");
+  const auto after = corrections[config.camera_input_flip];
+  std::vector<int> methods;
+  for (guint i = 0; i < std::max(1U, bin.num_uri_list); ++i) {
+    const char* uri = bin.num_uri_list ? bin.uri_list[i] : config.uri;
+    hm::media::DisplayTransform display;
+    if (uri && g_str_has_prefix(uri, "file:")) {
+      std::unique_ptr<gchar, decltype(&g_free)> filename(g_filename_from_uri(uri, nullptr, nullptr), g_free);
+      if (filename && g_file_test(filename.get(), G_FILE_TEST_IS_REGULAR)) {
+        auto metadata = hm::stitching::ReadCameraDisplayTransform(filename.get());
+        if (!metadata.ok())
+          return metadata.status();
+        display = *metadata;
+      }
+    }
+    methods.push_back(display.followedBy(after).nvFlipMethod());
+  }
+  return methods;
+}
+
 static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   gboolean ret = FALSE;
   GstCaps* caps = NULL;
   GstCapsFeatures* feature = NULL;
   bin->config = config;
+  absl::StatusOr<std::vector<int>> chapter_transforms;
   const bool packed10 = config->stitch_input_width && g_strcmp0(config->video_format, "RGB10A2_LE") == 0;
   const char* converter = NVDS_ELEM_VIDEO_CONV;
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
@@ -4565,7 +4622,13 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   // Both the source-preview tap and the stitch/dewarp branch consume these pixels.
   bin->camera_input_flip = nullptr;
-  if (config->camera_input_flip) {
+  chapter_transforms = camera_chapter_transforms(*bin, *config);
+  if (!chapter_transforms.ok()) {
+    NVGSTDS_ERR_MSG_V(
+        "Cannot configure camera display orientation: %s", chapter_transforms.status().ToString().c_str());
+    goto done;
+  }
+  if (std::any_of(chapter_transforms->begin(), chapter_transforms->end(), [](int method) { return method != 0; })) {
     bin->camera_input_flip = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "camera_input_flip");
     if (!bin->camera_input_flip)
       goto done;
@@ -4574,12 +4637,17 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         "gpu-id",
         config->gpu_id,
         "flip-method",
-        config->camera_input_flip,
+        chapter_transforms->front(),
         "disable-passthrough",
         TRUE,
         "nvbuf-memory-type",
         config->nvbuf_memory_type,
         NULL);
+    g_object_set_data_full(
+        G_OBJECT(bin->camera_input_flip),
+        "hstream-camera-transforms",
+        new std::vector<int>(std::move(*chapter_transforms)),
+        [](gpointer p) { delete static_cast<std::vector<int>*>(p); });
     gst_bin_add(GST_BIN(bin->bin), bin->camera_input_flip);
     NVGSTDS_LINK_ELEMENT(bin->camera_input_flip, bin->tee);
   }

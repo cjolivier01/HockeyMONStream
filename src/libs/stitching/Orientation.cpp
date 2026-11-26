@@ -25,6 +25,29 @@ namespace stitching {
 // For convenience.
 namespace fs = std::filesystem;
 
+absl::StatusOr<cv::Mat> orientation_internal::read_orientation_frame(
+    const std::string& file,
+    double start_seconds,
+    media::DisplayTransform display) {
+  cv::VideoCapture capture(file);
+  if (!capture.isOpened())
+    return absl::NotFoundError("Failed to open orientation video: " + file);
+  // Apply the same display matrix and subsequent manual corrections as the GPU decoder.
+  // Suppress the decoder's implicit rotation so that the matrix is applied exactly once.
+  if (capture.get(cv::CAP_PROP_ORIENTATION_AUTO) > 0 && !capture.set(cv::CAP_PROP_ORIENTATION_AUTO, 0))
+    return absl::FailedPreconditionError("Failed to disable automatic video rotation for orientation: " + file);
+  if (start_seconds > 0 && !capture.set(cv::CAP_PROP_POS_MSEC, start_seconds * 1000))
+    return absl::FailedPreconditionError("Failed to seek orientation video to the camera start: " + file);
+  cv::Mat frame;
+  if (!capture.read(frame) || frame.empty())
+    return absl::InternalError("Failed to decode the orientation frame at the camera start: " + file);
+  if (display.transpose)
+    cv::transpose(frame, frame);
+  if (display.flip.enabled())
+    cv::flip(frame, frame, display.flip.horizontal ? (display.flip.vertical ? -1 : 1) : 0);
+  return frame;
+}
+
 absl::Status orientation_internal::save_orientation_config(
     const fs::path& game_dir,
     const VideoChapter& left,
@@ -150,19 +173,13 @@ absl::Status configure_game_orientation(
     if (!window.ok())
       return window.status();
     const auto& selected = window->chapters.front();
-    cv::VideoCapture capture(selected.file);
-    if (!capture.isOpened())
-      return absl::NotFoundError("Failed to open orientation video: " + selected.file);
-    if (selected.start_seconds > 0 && !capture.set(cv::CAP_PROP_POS_MSEC, selected.start_seconds * 1000))
-      return absl::FailedPreconditionError("Failed to seek orientation video to the camera start: " + selected.file);
-    cv::Mat first_frame;
-    if (!capture.read(first_frame) || first_frame.empty()) {
-      return absl::InternalError("Failed to decode the orientation frame at the camera start: " + selected.file);
-    }
     media::FrameFlip flip;
     HM_ASSIGN_OR_RETURN(flip, SourceFrameFlip(flips, game_dir, playlist));
-    if (flip.enabled())
-      cv::flip(first_frame, first_frame, flip.horizontal ? (flip.vertical ? -1 : 1) : 0);
+    cv::Mat first_frame;
+    HM_ASSIGN_OR_RETURN(
+        first_frame,
+        orientation_internal::read_orientation_frame(
+            selected.file, selected.start_seconds, selected.display.corrected(flip)));
     auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
     if (!rink.ok()) {
       return absl::Status(

@@ -83,11 +83,11 @@ int main(int argc, char** argv) {
   if ((argc != 3 && argc != 4) || (std::strcmp(argv[2], "nvmm") != 0 && std::strcmp(argv[2], "raw") != 0) ||
       (option != nullptr && std::strcmp(option, "caps-only") != 0 && std::strcmp(option, "contiguous") != 0 &&
        std::strcmp(option, "block-linear") != 0 && std::strcmp(option, "compute-gpu") != 0 &&
-       std::strcmp(option, "copy-gpu") != 0)) {
+       std::strcmp(option, "copy-gpu") != 0 && std::strcmp(option, "partial") != 0)) {
     std::fprintf(
         stderr,
         "usage: %s ELEMENT nvmm|raw [caps-only|contiguous|block-linear|"
-        "compute-gpu|copy-gpu]\n",
+        "compute-gpu|copy-gpu|partial]\n",
         argv[0]);
     return 2;
   }
@@ -108,7 +108,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "failed to allocate input batch\n");
     return 2;
   }
-  input_surface->numFilled = 2;
+  const guint filled = option != nullptr && std::strcmp(option, "partial") == 0 ? 1 : 2;
+  input_surface->numFilled = filled;
   if (NvBufSurfaceMemSet(input_surface, 0, -1, 17) != 0 || NvBufSurfaceMemSet(input_surface, 1, -1, 203) != 0) {
     std::fprintf(stderr, "failed to initialize input batch\n");
     NvBufSurfaceDestroy(input_surface);
@@ -205,6 +206,8 @@ int main(int argc, char** argv) {
   gst_buffer_map(gst_sample_get_buffer(sample), &output_map, GST_MAP_READ);
   if (output_nvmm) {
     auto* output_surface = reinterpret_cast<NvBufSurface*>(output_map.data);
+    g_assert_cmpuint(output_surface->batchSize, ==, 2);
+    g_assert_cmpuint(output_surface->numFilled, ==, filled);
     std::printf(
         "batch=%u,filled=%u,gpu=%u,mem=%d,contiguous=%d\n",
         output_surface->batchSize,
@@ -226,7 +229,7 @@ int main(int argc, char** argv) {
   } else {
     constexpr gsize frame_size = 160U * 120U * 3U / 2U;
     std::printf("raw-size=%zu\n", output_map.size);
-    for (guint index = 0; index < 2; ++index) {
+    for (guint index = 0; index < filled; ++index) {
       g_assert_cmpuint((index + 1) * frame_size, <=, output_map.size);
       const std::uint64_t checksum =
           hash_bytes(UINT64_C(1469598103934665603), output_map.data + index * frame_size, frame_size);
