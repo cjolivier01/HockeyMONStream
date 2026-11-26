@@ -181,7 +181,8 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
 
 absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(
     const fs::path& game_dir,
-    const std::array<media::FrameFlip, 2>& flips) {
+    const std::array<media::FrameFlip, 2>& flips,
+    const std::vector<CalibrationFrameInput>& frames = {}) {
   const fs::path calibration_path = game_dir / "left_calibration.json";
   std::optional<AkazeCalibrationProfile> profile;
   HM_ASSIGN_OR_RETURN(profile, read_akaze_calibration_profile(game_dir));
@@ -195,7 +196,7 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(
     const YAML::Node document = YAML::Load(profile->contents);
     if (!document.IsMap())
       return absl::InvalidArgumentError("AKAZE lens calibration root must be an object");
-    const auto parse_camera = [&](const char* key, media::FrameFlip flip) -> absl::StatusOr<FisheyeLensCalibration> {
+    const auto parse_camera = [&](const char* key, size_t camera) -> absl::StatusOr<FisheyeLensCalibration> {
       const YAML::Node node = document[key];
       if (!node || !node.IsMap()) {
         return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration is missing object " << key));
@@ -219,16 +220,38 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(
           })) {
         return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration " << key << " contains invalid values"));
       }
-      if (flip.horizontal)
+      media::DisplayTransform display;
+      if (!frames.empty()) {
+        const auto& video = frames.front().source(camera).video;
+        if (!video.empty())
+          HM_ASSIGN_OR_RETURN(display, ReadRecordingDisplayTransform(video));
+        for (const auto& frame : frames) {
+          const auto& chapter = frame.source(camera).video;
+          if (!chapter.empty() && chapter != video) {
+            media::DisplayTransform other;
+            HM_ASSIGN_OR_RETURN(other, ReadRecordingDisplayTransform(chapter));
+            if (other.nvFlipMethod() != display.nvFlipMethod())
+              return absl::FailedPreconditionError(
+                  "A fixed AKAZE lens profile requires consistent camera display orientation");
+          }
+        }
+      }
+      display = display.corrected(flips[camera]);
+      if (display.transpose) {
+        std::swap(result.resolution.width, result.resolution.height);
+        std::swap(result.fx, result.fy);
+        std::swap(result.cx, result.cy);
+      }
+      if (display.flip.horizontal)
         result.cx = result.resolution.width - 1 - result.cx;
-      if (flip.vertical)
+      if (display.flip.vertical)
         result.cy = result.resolution.height - 1 - result.cy;
       return result;
     };
 
     AkazeMatchingCalibration result;
-    HM_ASSIGN_OR_RETURN(result.left, parse_camera("left_uniforms", flips[0]));
-    HM_ASSIGN_OR_RETURN(result.right, parse_camera("right_uniforms", flips[1]));
+    HM_ASSIGN_OR_RETURN(result.left, parse_camera("left_uniforms", 0));
+    HM_ASSIGN_OR_RETURN(result.right, parse_camera("right_uniforms", 1));
     result.source_profile_fingerprint = std::move(profile->fingerprint);
     std::cerr << "Using fisheye lens calibration from " << calibration_path << " for AKAZE feature detection"
               << std::endl;
@@ -3251,12 +3274,14 @@ absl::Status create_control_points(
   size_t max_control_points = 0;
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   StitchingBackendChoices backend_choices;
+  bool display_oriented = false;
   std::optional<std::array<StitchCameraOptics, 2>> ordered_input_cameras;
   std::optional<PlayerFrameSelectionPlan> selected_plan;
   const fs::path game_config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
       const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      display_oriented = RecordingUsesDisplayTransform(game_dir, config);
       int limit = 0;
       HM_ASSIGN_OR_RETURN(limit, read_control_point_limit(config));
       max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", static_cast<size_t>(limit));
@@ -3286,6 +3311,10 @@ absl::Status create_control_points(
       if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
         PlayerFrameSelectionPlan plan;
         HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
+        const auto orientation = plan.context.find("camera_display_orientation");
+        if (display_oriented && (orientation == plan.context.end() || orientation->second != "recorded"))
+          return absl::FailedPreconditionError(
+              "Selected frames predate camera display orientation. Restart calibration from input.");
         selected_plan = std::move(plan);
       }
     } else {
@@ -3483,7 +3512,7 @@ absl::Status create_control_points(
     std::array<media::FrameFlip, 2> flips{};
     if (ordered_input_cameras)
       flips = {(*ordered_input_cameras)[0].flip, (*ordered_input_cameras)[1].flip};
-    HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir, flips));
+    HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration_impl(game_dir, flips, frame_pairs));
   }
   MappingBackend mapping_backend;
   HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
@@ -3689,6 +3718,7 @@ absl::Status create_control_points(
   options.input_lens = backend_choices.camera.input_lens;
   options.input_cameras = backend_choices.camera.input_cameras;
   options.ordered_input_cameras = ordered_input_cameras;
+  options.display_oriented = display_oriented;
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;

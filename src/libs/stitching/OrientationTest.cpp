@@ -10,7 +10,9 @@
 #include <opencv2/core.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 namespace fs = std::filesystem;
 
@@ -35,6 +37,57 @@ void touch(const fs::path& path) {
   std::ofstream(path).put('\0');
 }
 
+bool test_camera_flips_with_display_rotation(const fs::path& root) {
+  const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
+  if (!expect(ffmpeg.has_value(), "ffmpeg is required for the rotated camera fixture"))
+    return false;
+  const std::string file = (root / "rotated.mp4").string();
+  // Only the top-left quadrant of the encoded frame is white.
+  const int generated = hm::run_command(
+      {*ffmpeg,
+       "-v",
+       "error",
+       "-noautorotate",
+       "-display_rotation",
+       "180",
+       "-f",
+       "lavfi",
+       "-i",
+       "color=black:size=64x48,drawbox=x=0:y=0:w=32:h=24:color=white:t=fill",
+       "-frames:v",
+       "1",
+       "-c:v",
+       "libx264",
+       file},
+      "",
+      {},
+      {});
+  if (!expect(generated == 0, "generate an MP4 with a 180-degree display matrix"))
+    return false;
+  const auto window = hm::stitching::CameraRecordingWindowAt({file}, 0, 1);
+  if (!expect(window.ok(), "read the camera display matrix"))
+    return false;
+  for (bool horizontal : {false, true}) {
+    for (bool vertical : {false, true}) {
+      const auto frame = hm::stitching::orientation_internal::read_orientation_frame(
+          file, 0, window->chapters.front().display.corrected({horizontal, vertical}));
+      if (!expect(frame.ok(), "decode the rotated camera fixture")) {
+        std::cerr << frame.status() << '\n';
+        return false;
+      }
+      cv::Mat channel;
+      cv::extractChannel(*frame, channel, 0);
+      cv::Mat expected = cv::Mat::zeros(48, 64, CV_8U);
+      expected(cv::Rect(horizontal ? 0 : 32, vertical ? 0 : 24, 32, 24)).setTo(255);
+      if (!expect(
+              channel.size() == expected.size() && cv::countNonZero((channel > 128) != expected) == 0,
+              "rink inference must receive the displayed image with the selected corrections"))
+        return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
@@ -54,6 +107,7 @@ int main() {
   ok &= expect(created != nullptr, "temporary directory must be created");
   if (created != nullptr) {
     const fs::path root(created);
+    ok &= test_camera_flips_with_display_rotation(root);
     touch(root / "cam10" / "GA020123.MP4");
     touch(root / "cam10" / "GX010123.MP4");
     touch(root / "cam2" / "VID_20260102_030405_002.mp4");

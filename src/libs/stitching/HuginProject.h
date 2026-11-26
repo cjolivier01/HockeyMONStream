@@ -54,6 +54,7 @@ class HuginProject {
   };
 
   struct CanvasProvenance {
+    bool display_oriented{false};
     std::optional<StitchSourceSizes> source_sizes;
     size_t max_output_width{0};
     size_t max_canvas_dimension{0};
@@ -79,6 +80,7 @@ class HuginProject {
   };
 
   struct Options {
+    bool display_oriented{false};
     using ProgressCallback =
         std::function<void(const std::string& stage, const std::string& status, const std::string& message)>;
     using LevelingSelectionCallback = std::function<absl::StatusOr<std::optional<std::array<double, 3>>>(

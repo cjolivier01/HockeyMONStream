@@ -41,7 +41,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":va_element", "@gstreamer", "@com_google_absl//absl/status:statusor"],
+    deps = [":va_element", "//src/libs/media:display_transform_headers", "@gstreamer", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_test(

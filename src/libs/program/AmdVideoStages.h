@@ -25,7 +25,10 @@ class AmdStitcher {
       const AmdProgramProcessorConfig& config,
       size_t maximum_frames);
   ~AmdStitcher();
-  absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> Process(GstSample* left, GstSample* right);
+  absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> Process(
+      GstSample* left,
+      GstSample* right,
+      std::array<media::DisplayTransform, 2> display = {});
   int width() const;
   int height() const;
   const std::string& generation() const;

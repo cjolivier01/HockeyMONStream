@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "hstream/src/libs/media/DisplayTransform.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 
 namespace hm::stitching {
@@ -23,6 +24,7 @@ struct VideoLensMetadata {
   std::optional<double> vertical_fov;
   std::string fov_unavailable_reason;
   std::map<std::string, std::string> recording_mode;
+  media::DisplayTransform display{};
 };
 
 // Bounded MP4 header/trailer and first DJI metadata sample reads only.
@@ -31,10 +33,12 @@ struct VideoLensMetadata {
 absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video);
 // Compare the saved pixel grids with the selected recordings when their video
 // headers are available. Decoded surfaces are checked independently at playback.
+bool RecordingUsesDisplayTransform(const std::filesystem::path& game, const YAML::Node& config);
 absl::Status CheckCalibrationRecordingSizes(
     const std::filesystem::path& game,
     const YAML::Node& config,
     const StitchSourceSizes& calibrated);
+absl::StatusOr<media::DisplayTransform> ReadRecordingDisplayTransform(const std::filesystem::path& recording);
 absl::StatusOr<std::array<int, 2>> ReadRecordingSize(const std::filesystem::path& recording);
 absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated);
 // Exposed for bounded malformed-input and model-conversion tests.

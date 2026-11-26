@@ -1,7 +1,7 @@
 #pragma once
 
 namespace hm::media {
-// Reflections in the original decoded image axes. Applying both is a half turn.
+// Reflections in the displayed image axes. Applying both is a half turn.
 struct FrameFlip {
   bool horizontal{};
   bool vertical{};

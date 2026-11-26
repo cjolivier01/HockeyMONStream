@@ -674,9 +674,13 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
     throw Failure(absl::CancelledError("Program stopped before its first completed frame"));
   // A queued startup seek may land exactly at EOS and leave no input pair.
   while (pair) {
-    const auto completed =
-        Take(processor->Process(pair->sequence, pair->cameras[0].sample.get(), pair->cameras[1].sample.get(),
-                                pair->time, pair->duration));
+    const auto completed = Take(processor->Process(
+        pair->sequence,
+        pair->cameras[0].sample.get(),
+        pair->cameras[1].sample.get(),
+        pair->time,
+        pair->duration,
+        {pair->cameras[0].display, pair->cameras[1].display}));
     if (overlay_state.selection().players || output_rink_map)
       preview_boxes.Update(pair->time, completed.observation.tracks);
     std::shared_ptr<const hm::gpu::Image> scoreboard_image;

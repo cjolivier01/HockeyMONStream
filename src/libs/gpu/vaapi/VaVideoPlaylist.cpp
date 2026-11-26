@@ -91,7 +91,7 @@ absl::StatusOr<std::unique_ptr<VaVideoPlaylist>> VaVideoPlaylist::Create(
       return absl::InvalidArgumentError("Playlist codec differs from the configured decoder");
     if (!impl->chapters.empty()) {
       const auto& first = impl->chapters.front().video;
-      if (info->width != first.width || info->height != first.height ||
+      if (info->displayWidth() != first.displayWidth() || info->displayHeight() != first.displayHeight() ||
           int64_t(info->fps_n) * first.fps_d != int64_t(first.fps_n) * info->fps_d)
         return absl::InvalidArgumentError("Playlist chapters differ in video geometry or frame rate");
     }
@@ -237,6 +237,7 @@ absl::StatusOr<std::optional<VaVideoFrame>> VaVideoPlaylist::Read() {
         frame.info.width != chapter.video.width || frame.info.height != chapter.video.height ||
         int64_t(frame.info.fps_n) * chapter.video.fps_d != int64_t(chapter.video.fps_n) * frame.info.fps_d)
       return impl.Retire(absl::DataLossError("Decoded chapter differs from its video metadata"));
+    frame.display = chapter.video.display;
     frame.time = chapter.start + frame.time - chapter.video.start_ns;
     if (GST_CLOCK_TIME_IS_VALID(impl.previous) && frame.time <= impl.previous)
       return impl.Retire(absl::DataLossError("Playlist video time did not increase"));

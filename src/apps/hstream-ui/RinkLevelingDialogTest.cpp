@@ -808,7 +808,7 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    for (const int version : {10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}) {
+    for (int version = 10; version <= 29; ++version) {
       QByteArray current_provenance = selected_provenance;
       current_provenance.replace("version=10", "version=" + QByteArray::number(version));
       auto selected_camera = changed_camera;

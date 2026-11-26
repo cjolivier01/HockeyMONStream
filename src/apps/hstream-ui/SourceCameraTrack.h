@@ -12,6 +12,7 @@ struct SourceCameraTrack {
   int width, height;
   int64_t start_ns, duration_ns;
   const char* demux;
+  media::DisplayTransform display{};
 };
 absl::StatusOr<SourceCameraTrack> ReadSourceCameraTrack(
     const QString& file,

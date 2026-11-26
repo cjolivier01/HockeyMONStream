@@ -37,8 +37,9 @@ struct Stream {
     (void)cudaStreamDestroy(value);
   }
 };
-void Test(PixelFormat format, int width, int height, cudaStream_t stream, hm::media::FrameFlip flip = {}) {
-  const size_t input_pitch = width * 8 + 24, output_pitch = width * 8 + 32;
+void Test(PixelFormat format, int width, int height, cudaStream_t stream, hm::media::DisplayTransform display = {}) {
+  const int out_width = display.transpose ? height : width, out_height = display.transpose ? width : height;
+  const size_t input_pitch = width * 8 + 24, output_pitch = out_width * 8 + 32;
   std::vector<uint8_t> input(input_pitch * height, 0xa5), uv(input_pitch * height, 0x5a);
   std::vector<std::array<float, 4>> expected(width * height);
   const bool ten_bit = format == PixelFormat::kP010;
@@ -95,10 +96,10 @@ void Test(PixelFormat format, int width, int height, cudaStream_t stream, hm::me
       }
     }
   }
-  Buffer source(input.size()), chroma(uv.size()), destination(output_pitch * height + 32);
+  Buffer source(input.size()), chroma(uv.size()), destination(output_pitch * out_height + 32);
   Gpu(cudaMemcpyAsync(source.data, input.data(), input.size(), cudaMemcpyHostToDevice, stream));
   Gpu(cudaMemcpyAsync(chroma.data, uv.data(), uv.size(), cudaMemcpyHostToDevice, stream));
-  Gpu(cudaMemsetAsync(destination.data, 0xa5, output_pitch * height + 32, stream));
+  Gpu(cudaMemsetAsync(destination.data, 0xa5, output_pitch * out_height + 32, stream));
   const float factor = ten_bit ? 1020.f / 1023 : 1.f;
   Image image{
       source.data,
@@ -115,30 +116,31 @@ void Test(PixelFormat format, int width, int height, cudaStream_t stream, hm::me
       -.21324861f / factor,
       -.53290933f / factor,
       2.11240179f / factor};
-  Gpu(ConvertToRgba16Float(image, destination.data, output_pitch, stream, flip));
-  std::vector<uint8_t> output(output_pitch * height + 32);
+  Gpu(ConvertToRgba16Float(image, destination.data, output_pitch, stream, display));
+  std::vector<uint8_t> output(output_pitch * out_height + 32);
   Gpu(cudaMemcpyAsync(output.data(), destination.data, output.size(), cudaMemcpyDeviceToHost, stream));
   Gpu(cudaStreamSynchronize(stream));
-  for (int y = 0; y < height; ++y) {
+  for (int y = 0; y < out_height; ++y) {
     const auto* row = reinterpret_cast<const cv::float16_t*>(output.data() + y * output_pitch);
-    for (int x = 0; x < width; ++x)
+    for (int x = 0; x < out_width; ++x) {
+      const int u = display.flip.horizontal ? out_width - 1 - x : x;
+      const int v = display.flip.vertical ? out_height - 1 - y : y;
+      const size_t source_index = display.transpose ? u * width + v : v * width + u;
       for (int c = 0; c < 4; ++c)
         Check(
-            std::abs(
-                float(row[x * 4 + c]) -
-                expected[(flip.vertical ? height - 1 - y : y) * width + (flip.horizontal ? width - 1 - x : x)][c]) <=
-                .13f,
-            "Pixel mismatch (includes final row/column)");
-    for (size_t i = width * 8; i < output_pitch; ++i)
+            std::abs(float(row[x * 4 + c]) - expected[source_index][c]) <= .13f,
+            "Transformed pixel mismatch (includes final row/column)");
+    }
+    for (size_t i = out_width * 8; i < output_pitch; ++i)
       Check(output[y * output_pitch + i] == 0xa5, "Output pitch guard overwritten");
   }
-  for (size_t i = output_pitch * height; i < output.size(); ++i)
+  for (size_t i = output_pitch * out_height; i < output.size(); ++i)
     Check(output[i] == 0xa5, "Output tail guard overwritten");
   Check(
       ConvertToRgba16Float(image, source.data, input_pitch, stream) == cudaErrorInvalidValue,
       "Overlapping planes accepted");
   Check(
-      ConvertToRgba16Float(image, destination.data, width * 8 - 1, stream) == cudaErrorInvalidValue,
+      ConvertToRgba16Float(image, destination.data, out_width * 8 - 1, stream, display) == cudaErrorInvalidValue,
       "Short output pitch accepted");
   Check(
       ConvertToRgba16Float(image, destination.data, std::numeric_limits<size_t>::max(), stream) ==
@@ -162,7 +164,8 @@ int main() {
           PixelFormat::kNv12,
           PixelFormat::kP010}) {
       for (hm::media::FrameFlip flip : {hm::media::FrameFlip{}, {true, false}, {false, true}, {true, true}})
-        Test(format, 8, 6, stream.value, flip);
+        for (bool transpose : {false, true})
+          Test(format, 8, 6, stream.value, {transpose, flip});
       if (format != PixelFormat::kNv12 && format != PixelFormat::kP010) {
         Test(format, 1, 1, stream.value);
         Test(format, 7, 3, stream.value);

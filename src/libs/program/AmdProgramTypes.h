@@ -8,7 +8,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
-#include "hstream/src/libs/media/FrameFlip.h"
+#include "hstream/src/libs/media/DisplayTransform.h"
 
 #include "cupano/pano/blendMode.h"
 #include "hstream/src/libs/detection/HipDetector.h"

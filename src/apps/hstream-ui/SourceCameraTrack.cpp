@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/SourceCameraTrack.h"
+#include "hstream/src/libs/media/DisplayMatrix.h"
 
 #include <gst/gst.h>
 extern "C" {
@@ -24,7 +25,14 @@ absl::StatusOr<SourceCameraTrack> ReadSourceCameraTrack(
     auto track = media::ReadMp4VideoTrack(file.toStdString(), timeout_ms * GST_MSECOND, cancelled);
     if (!track.ok())
       return track.status();
-    return SourceCameraTrack{track->codec, track->width, track->height, track->start_ns, track->duration_ns, "qtdemux"};
+    return SourceCameraTrack{
+        track->codec,
+        track->displayWidth(),
+        track->displayHeight(),
+        track->start_ns,
+        track->duration_ns,
+        "qtdemux",
+        track->display};
   }
   // These containers do not share MP4's strict header timing contract. Inspect
   // headers and, if necessary, compressed timestamps only; never open a codec.
@@ -164,12 +172,16 @@ absl::StatusOr<SourceCameraTrack> ReadSourceCameraTrack(
   if (Clock::now() >= deadline || !std::isfinite(seconds) || seconds <= 0 ||
       (seconds + origin) * 1e9 >= std::numeric_limits<int64_t>::max())
     return absl::DataLossError("Camera video duration is missing, invalid or exceeded its inspection deadline");
+  const auto display = media::StreamDisplayTransform(*video);
+  if (!display.ok())
+    return display.status();
   return SourceCameraTrack{
       codec->codec_id == AV_CODEC_ID_H264 ? media::VideoCodec::kH264 : media::VideoCodec::kHevc,
-      codec->width,
-      codec->height,
+      display->transpose ? codec->height : codec->width,
+      display->transpose ? codec->width : codec->height,
       static_cast<int64_t>(std::llround(origin * 1e9)),
       static_cast<int64_t>(std::llround(seconds * 1e9)),
-      g_strcmp0(context->iformat->name, "avi") == 0 ? "avidemux" : "matroskademux"};
+      g_strcmp0(context->iformat->name, "avi") == 0 ? "avidemux" : "matroskademux",
+      *display};
 }
 } // namespace hm::ui

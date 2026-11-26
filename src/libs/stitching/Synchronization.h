@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/media/DisplayTransform.h"
 
 namespace hm::stitching {
 struct CameraTrackFormat {
@@ -11,6 +12,8 @@ struct CameraTrackFormat {
   bool constant_rate;
   int64_t timebase_tick_ns;
 };
+// Read the demuxed video header without decoding or probing packets.
+absl::StatusOr<media::DisplayTransform> ReadCameraDisplayTransform(const std::string& file);
 absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file);
 
 struct CameraChapterSlice {
@@ -20,6 +23,7 @@ struct CameraChapterSlice {
   double timestamp_origin_seconds{0};
   // Matroska demuxed PTS are already expressed on the track timeline.
   bool matroska_timestamps{false};
+  media::DisplayTransform display{};
 };
 struct CameraRecordingWindow {
   std::vector<CameraChapterSlice> chapters;

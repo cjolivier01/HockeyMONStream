@@ -9,8 +9,12 @@
 
 namespace hm::stitching {
 
-absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std::vector<std::string>& lines) {
-  for (int version = 22; version <= 25; ++version) {
+absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(
+    std::vector<std::string>& lines,
+    bool* display_oriented) {
+  if (display_oriented)
+    *display_oriented = false;
+  for (int version = 22; version <= 29; ++version) {
     if (lines.empty() || lines.front() != "version=" + std::to_string(version))
       continue;
     if (lines.size() < 5)
@@ -32,7 +36,9 @@ absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std:
       }
     }
     lines.resize(lines.size() - 4);
-    lines.front() = "version=" + std::to_string(version - 4);
+    if (display_oriented)
+      *display_oriented = version >= 26;
+    lines.front() = "version=" + std::to_string(version >= 26 ? version - 8 : version - 4);
     return sizes;
   }
   return std::nullopt;
