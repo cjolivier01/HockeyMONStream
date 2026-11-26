@@ -102,7 +102,7 @@ bazelisk test --config=opt --test_output=errors \
 It checks pad and negotiated caps, properties, the exact namespaced ELF ABI,
 dynamic dependencies, RAW and NVMM paths, the documented format set, odd
 dimensions in every RAW format, crop backgrounds across YUV formats, flips,
-interpolation, metadata orientation, nonzero batched content, custom RAW
+interpolation, metadata orientation, full and partial NVMM batches, custom RAW
 plane mappings and strides, signed caps-only batch sizing, output-pool depth,
 allocation/layout controls, malformed NVMM descriptors, undersized-stride
 rejection, stale layout-meta filtering, and unsupported BGRA64 conversion.
@@ -111,6 +111,12 @@ pitched CUDA copies in both host-to-device and device-to-host directions when
 CUDA-device and VIC-compatible staging must be bridged, while `copy-hw=VIC`
 selects the public `NvBufSurfaceCopy` API. Probe processes have explicit
 timeouts.
+
+Destination crop arrays cover the output surface's full `batchSize`, including
+unused slots in a partial batch. Jetson's transform library normalizes those
+rectangles before processing `numFilled` frames; allocating only `numFilled`
+rectangles corrupts the heap. The batch probe compares a one-frame input in a
+two-slot pool with the vendor converter, including its pixels and filled count.
 
 The installed DeepStream 7.1 oracle used by Hstream's Jetson validation can emit
 invalid RAW bytes in a headless session when CUDA-device surfaces are consumed
