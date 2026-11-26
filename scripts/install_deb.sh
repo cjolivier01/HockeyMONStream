@@ -569,6 +569,90 @@ read_deepstream_requirement() {
   [[ -n "${DEEPSTREAM_PACKAGE}" && -n "${DEEPSTREAM_MIN_VERSION}" && -n "${DEEPSTREAM_MAX_VERSION}" ]]
 }
 
+# Write a copy of a DeepStream artifact that declares Conflicts and Replaces
+# against the older DeepStream package names it is about to take the shared
+# paths from, and prove the copy carries them:
+#   build_deepstream_transition_deb SOURCE_DEB OUTPUT_DEB PACKAGE...
+#
+# The fields are added when the paragraph does not already have one.  NVIDIA's
+# artifacts carry Conflicts but no Replaces at all, so a rewrite that can only
+# extend an existing line leaves out the relationship that lets dpkg hand those
+# paths over, which is the reason for the copy.
+#
+# Only the control member is rewritten.  Unpacking and rebuilding the whole
+# artifact with dpkg-deb would recompress a gigabyte of data that does not
+# change, so the copy keeps its own data member and ar replaces the one member
+# that does.
+build_deepstream_transition_deb() {
+  local source_deb="$1"
+  local output_deb="$2"
+  shift 2
+  local -a relationships=("$@")
+  local control_dir control_member relationship_list relationship package metadata
+  local -a control_compression=()
+
+  control_member="$(ar t "${source_deb}" | awk '/^control[.]tar[.]/{print; exit}')"
+  if [[ -z "${control_member}" ]]; then
+    echo "ERROR: malformed DeepStream Debian artifact." >&2
+    return 1
+  fi
+  case "${control_member}" in
+    *.zst) control_compression=(--zstd) ;;
+    *.xz) control_compression=(-J) ;;
+    *.gz) control_compression=(-z) ;;
+    *) echo "ERROR: unsupported DeepStream control archive: ${control_member}" >&2; return 1 ;;
+  esac
+
+  control_dir="$(mktemp -d /tmp/hstream-deepstream-control.XXXXXX)"
+  mkdir "${control_dir}/control"
+  ar p "${source_deb}" "${control_member}" \
+    | tar "${control_compression[@]}" -xf - -C "${control_dir}/control"
+
+  relationship_list="$(printf ', %s' "${relationships[@]}")"
+  relationship_list="${relationship_list#, }"
+  # A missing field is printed at the end of the paragraph.  Field names are
+  # compared without case, because adding a second Replaces to a paragraph
+  # that spells it "replaces" is a control file dpkg refuses to parse at all.
+  awk -v list="${relationship_list}" '
+    BEGIN { split("Conflicts Replaces", wanted, " ") }
+    {
+      for (slot in wanted) {
+        if (toupper(substr($0, 1, length(wanted[slot]) + 1)) == toupper(wanted[slot] ":")) {
+          seen[wanted[slot]] = 1
+          $0 = $0 ", " list
+        }
+      }
+      print
+    }
+    END {
+      for (slot in wanted) {
+        if (!(wanted[slot] in seen)) { print wanted[slot] ": " list }
+      }
+    }
+  ' "${control_dir}/control/control" >"${control_dir}/control/control.rewritten"
+  mv -f "${control_dir}/control/control.rewritten" "${control_dir}/control/control"
+  tar "${control_compression[@]}" -cf "${control_dir}/${control_member}" \
+    -C "${control_dir}/control" .
+
+  # ar replaces a member in place, so debian-binary stays first and the data
+  # member keeps the bytes it was built with.  Writing the archive headers,
+  # member sizes and even-byte padding by hand is what this avoids.
+  cp "${source_deb}" "${output_deb}"
+  ar r "${output_deb}" "${control_dir}/${control_member}"
+  rm -rf "${control_dir}"
+
+  dpkg-deb --info "${output_deb}" >/dev/null
+  for relationship in Conflicts Replaces; do
+    metadata="$(dpkg-deb -f "${output_deb}" "${relationship}")"
+    for package in "${relationships[@]}"; do
+      if [[ ",${metadata// /}," != *",${package},"* ]]; then
+        echo "ERROR: failed to add ${relationship}: ${package} to the DeepStream transition artifact." >&2
+        return 1
+      fi
+    done
+  done
+}
+
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
 if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
@@ -1062,59 +1146,13 @@ install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
   transition_dir="$(mktemp -d /tmp/hstream-deepstream-transition.XXXXXX)"
-  control_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^control[.]tar[.]/{print; exit}')"
-  data_member="$(ar t "${DEEPSTREAM_DEB}" | awk '/^data[.]tar[.]/{print; exit}')"
-  if [[ -z "${control_member}" || -z "${data_member}" ]]; then
-    echo "ERROR: malformed DeepStream Debian artifact." >&2
-    exit 1
-  fi
-  case "${control_member}" in
-    *.zst) control_compression=(--zstd) ;;
-    *.xz) control_compression=(-J) ;;
-    *.gz) control_compression=(-z) ;;
-    *) echo "ERROR: unsupported DeepStream control archive: ${control_member}" >&2; exit 1 ;;
-  esac
-  mkdir "${transition_dir}/control"
-  ar p "${DEEPSTREAM_DEB}" "${control_member}" | tar "${control_compression[@]}" -xf - -C "${transition_dir}/control"
   transition_relationships=()
   for package in "${old_deepstream_packages[@]}"; do
     transition_relationships+=("${package%%:*}")
   done
-  relationship_list="$(IFS=', '; echo "${transition_relationships[*]}")"
-  sed -i -E \
-    -e "s/^(Conflicts:.*)$/\\1, ${relationship_list}/" \
-    -e "s/^(Replaces:.*)$/\\1, ${relationship_list}/" \
-    "${transition_dir}/control/control"
-  tar "${control_compression[@]}" -cf "${transition_dir}/${control_member}" -C "${transition_dir}/control" .
   install_deepstream_deb="${transition_dir}/${DEEPSTREAM_PACKAGE}-transition.deb"
-  printf '!<arch>\n' >"${install_deepstream_deb}"
-  append_ar_member() {
-    local name="$1"
-    local size="$2"
-    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${name}/" 0 0 0 100644 "${size}" >>"${install_deepstream_deb}"
-  }
-  for member in debian-binary "${control_member}" "${data_member}"; do
-    if [[ "${member}" == "${control_member}" ]]; then
-      member_size="$(stat -c '%s' "${transition_dir}/${control_member}")"
-      append_ar_member "${member}" "${member_size}"
-      cat "${transition_dir}/${control_member}" >>"${install_deepstream_deb}"
-    else
-      member_size="$(ar tv "${DEEPSTREAM_DEB}" | awk -v member="${member}" '$NF == member {print $3; exit}')"
-      append_ar_member "${member}" "${member_size}"
-      ar p "${DEEPSTREAM_DEB}" "${member}" >>"${install_deepstream_deb}"
-    fi
-    if (( member_size % 2 != 0 )); then printf '\n' >>"${install_deepstream_deb}"; fi
-  done
-  dpkg-deb --info "${install_deepstream_deb}" >/dev/null
-  for relationship in Conflicts Replaces; do
-    metadata="$(dpkg-deb -f "${install_deepstream_deb}" "${relationship}")"
-    for package in "${transition_relationships[@]}"; do
-      if [[ ",${metadata// /}," != *",${package},"* ]]; then
-        echo "ERROR: failed to add ${relationship}: ${package} to the DeepStream transition artifact." >&2
-        exit 1
-      fi
-    done
-  done
+  build_deepstream_transition_deb "${DEEPSTREAM_DEB}" "${install_deepstream_deb}" \
+    "${transition_relationships[@]}"
 fi
 
 install_debs=()

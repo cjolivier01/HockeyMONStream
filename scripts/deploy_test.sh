@@ -693,6 +693,90 @@ expect_equal "${installer_rejection}" \
   'ERROR: --hstream-deb and --deepstream-deb are required.' \
   "the installer still requires a DeepStream artifact by default"
 
+# Installing deepstream-9.2 over deepstream-9.1 means taking paths dpkg still
+# records as 9.1's, which it refuses without a Replaces.  NVIDIA's artifacts
+# declare Conflicts and no Replaces at all, so build the transition copy the
+# installer builds and read the fields back off it.
+if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null; then
+  echo "deploy_test: SKIPPING DeepStream transition checks (dpkg-deb or ar unavailable)" >&2
+else
+  transition_root="$(mktemp -d)"
+  trap 'rm -rf "${transition_root}"' EXIT
+
+  # $1 is what the artifact declares before the rewrite; the payload stands in
+  # for the gigabyte of DeepStream the copy has to carry through untouched.
+  make_transition_fixture() {
+    local relationships="$1" path="$2"
+    local root="${transition_root}/build/$(basename "${path}" .deb)"
+    mkdir -p "${root}/DEBIAN" "${root}/opt/nvidia/deepstream"
+    head -c 4096 /dev/urandom >"${root}/opt/nvidia/deepstream/payload.bin"
+    {
+      printf 'Package: deepstream-9.2\nVersion: 9.2.0-1\nArchitecture: amd64\n'
+      printf 'Maintainer: test <test@example.invalid>\n'
+      [[ -n "${relationships}" ]] && printf '%s\n' "${relationships}"
+      printf 'Description: deploy_test fixture\n'
+    } >"${root}/DEBIAN/control"
+    dpkg-deb -Zzstd --build --root-owner-group "${root}" "${path}" >/dev/null
+  }
+
+  # The installer is a production script, so run it in a subshell the way the
+  # dependency reader above is run.
+  build_transition() {
+    HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+      # shellcheck disable=SC1090
+      source "$1"
+      shift
+      build_deepstream_transition_deb "$@"
+    ' _ "${SCRIPT_DIR}/install_deb.sh" "$@"
+  }
+
+  # Exactly what deepstream-9.2_9.2.0-1_amd64.deb declares: a Conflicts to
+  # extend and no Replaces to extend.
+  make_transition_fixture 'Conflicts: libglapi-amber, deepstream-binaries-x86' \
+    "${transition_root}/nvidia.deb"
+  build_transition "${transition_root}/nvidia.deb" "${transition_root}/nvidia-transition.deb" \
+    deepstream-9.1 || fail "the installer could not build a transition artifact"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-binaries-x86, deepstream-9.1" \
+    "the transition copy keeps the artifact's own conflicts and adds the old release"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Replaces)" \
+    "deepstream-9.1" "the transition copy declares a Replaces the artifact does not have"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Version)" 9.2.0-1 \
+    "the transition copy is still the artifact it was made from"
+  mkdir "${transition_root}/unpacked"
+  dpkg-deb -x "${transition_root}/nvidia-transition.deb" "${transition_root}/unpacked" \
+    || fail "the transition artifact does not unpack"
+  cmp -s "${transition_root}/unpacked/opt/nvidia/deepstream/payload.bin" \
+    "${transition_root}/build/nvidia/opt/nvidia/deepstream/payload.bin" \
+    || fail "the transition artifact did not carry its data member through unchanged"
+
+  # An existing field is extended rather than replaced, and more than one
+  # installed release is named in both fields.
+  make_transition_fixture \
+    'Conflicts: libglapi-amber
+Replaces: deepstream-sample-data' "${transition_root}/both.deb"
+  build_transition "${transition_root}/both.deb" "${transition_root}/both-transition.deb" \
+    deepstream-9.1 deepstream-8.0 || fail "the installer could not extend existing relationships"
+  expect_equal "$(dpkg-deb -f "${transition_root}/both-transition.deb" Replaces)" \
+    "deepstream-sample-data, deepstream-9.1, deepstream-8.0" \
+    "an existing Replaces is extended with every installed release"
+  expect_equal "$(dpkg-deb -f "${transition_root}/both-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-9.1, deepstream-8.0" \
+    "an existing Conflicts is extended with every installed release"
+
+  # Neither field present: an artifact that declares nothing still gets both.
+  make_transition_fixture '' "${transition_root}/bare.deb"
+  build_transition "${transition_root}/bare.deb" "${transition_root}/bare-transition.deb" \
+    deepstream-9.1 || fail "the installer could not add both relationships"
+  expect_equal "$(dpkg-deb -f "${transition_root}/bare-transition.deb" Conflicts)" \
+    "deepstream-9.1" "a Conflicts is added to an artifact that declares none"
+  expect_equal "$(dpkg-deb -f "${transition_root}/bare-transition.deb" Replaces)" \
+    "deepstream-9.1" "a Replaces is added to an artifact that declares none"
+
+  rm -rf "${transition_root}"
+  trap - EXIT
+fi
+
 for script in deploy.sh make_deb.sh make_deb_jetson.sh; do
   if output="$(JETSON_QT=invalid NODES=stubby bash "${SCRIPT_DIR}/${script}" 2>&1)"; then
     fail "${script} accepted an invalid JETSON_QT option"
