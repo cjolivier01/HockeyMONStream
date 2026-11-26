@@ -569,6 +569,30 @@ read_deepstream_requirement() {
   [[ -n "${DEEPSTREAM_PACKAGE}" && -n "${DEEPSTREAM_MIN_VERSION}" && -n "${DEEPSTREAM_MAX_VERSION}" ]]
 }
 
+# Name the installed DeepStream releases a new one is about to take shared
+# paths from, reading dpkg-query '${binary:Package}\t${db:Status-Abbrev}' lines
+# on stdin:
+#   dpkg-query ... | superseded_deepstream_packages KEEP
+#
+# What matters is whether a release still owns files, which is the current
+# status, not the desired one: a held release reads "hi" and one an
+# interrupted apt already marked for removal reads "ri", and both still own
+# every path dpkg recorded for them.  Only "n" (gone) and "c" (config files
+# only) own none.  Split packages such as deepstream-sample-data are left out;
+# the artifacts declare their own conflicts with those.
+superseded_deepstream_packages() {
+  local keep="$1"
+  local package status package_name
+  while IFS=$'\t' read -r package status; do
+    package_name="${package%%:*}"
+    if [[ "${status:1:1}" != "n" && "${status:1:1}" != "c" &&
+          "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
+          "${package_name}" != "${keep}" ]]; then
+      printf '%s\n' "${package_name}"
+    fi
+  done
+}
+
 # Write a copy of a DeepStream artifact that declares Conflicts and Replaces
 # against the older DeepStream package names it is about to take the shared
 # paths from, and prove the copy carries them:
@@ -578,21 +602,25 @@ read_deepstream_requirement() {
 # artifacts carry Conflicts but no Replaces at all, so a rewrite that can only
 # extend an existing line leaves out the relationship that lets dpkg hand those
 # paths over, which is the reason for the copy.
-#
-# Only the control member is rewritten.  Unpacking and rebuilding the whole
-# artifact with dpkg-deb would recompress a gigabyte of data that does not
-# change, so the copy keeps its own data member and ar replaces the one member
-# that does.
 build_deepstream_transition_deb() {
   local source_deb="$1"
   local output_deb="$2"
   shift 2
   local -a relationships=("$@")
-  local control_dir control_member relationship_list relationship package metadata
+  local output_dir control_dir control_member data_member relationship_list
+  local relationship package member member_size metadata
   local -a control_compression=()
 
+  # Without a package to name, the verification below has nothing to look for
+  # and would pass an artifact carrying two empty fields.
+  if [[ "${#relationships[@]}" -eq 0 ]]; then
+    echo "ERROR: no DeepStream release to declare the transition against." >&2
+    return 1
+  fi
+
   control_member="$(ar t "${source_deb}" | awk '/^control[.]tar[.]/{print; exit}')"
-  if [[ -z "${control_member}" ]]; then
+  data_member="$(ar t "${source_deb}" | awk '/^data[.]tar[.]/{print; exit}')"
+  if [[ -z "${control_member}" || -z "${data_member}" ]]; then
     echo "ERROR: malformed DeepStream Debian artifact." >&2
     return 1
   fi
@@ -603,44 +631,89 @@ build_deepstream_transition_deb() {
     *) echo "ERROR: unsupported DeepStream control archive: ${control_member}" >&2; return 1 ;;
   esac
 
-  control_dir="$(mktemp -d /tmp/hstream-deepstream-control.XXXXXX)"
-  mkdir "${control_dir}/control"
+  # Scratch next to the output, so whoever cleans that directory cleans the
+  # extracted control tree with it.
+  output_dir="$(dirname "${output_deb}")"
+  control_dir="${output_dir}/control"
+  # Start empty: a file an earlier failed attempt left behind would otherwise
+  # be packed into this artifact's control member.
+  rm -rf "${control_dir:?}"
+  mkdir -p "${control_dir}"
   ar p "${source_deb}" "${control_member}" \
-    | tar "${control_compression[@]}" -xf - -C "${control_dir}/control"
+    | tar "${control_compression[@]}" -xf - -C "${control_dir}"
 
   relationship_list="$(printf ', %s' "${relationships[@]}")"
   relationship_list="${relationship_list#, }"
-  # A missing field is printed at the end of the paragraph.  Field names are
-  # compared without case, because adding a second Replaces to a paragraph
-  # that spells it "replaces" is a control file dpkg refuses to parse at all.
+  # Edit the first paragraph only, and edit it as Deb822 rather than as lines:
+  # a relationship can be folded across continuation lines, so the list joins
+  # the field's last line, and a missing field goes in before the blank line
+  # that ends the paragraph.  After one, it would start a second paragraph and
+  # dpkg would refuse the whole control file.  Field names are matched without
+  # case, because a second Replaces beside a "replaces" is also unparsable.
   awk -v list="${relationship_list}" '
-    BEGIN { split("Conflicts Replaces", wanted, " ") }
-    {
-      for (slot in wanted) {
-        if (toupper(substr($0, 1, length(wanted[slot]) + 1)) == toupper(wanted[slot] ":")) {
-          seen[wanted[slot]] = 1
-          $0 = $0 ", " list
+    function field_at(line,   slot, name) {
+      for (slot = 1; slot <= wanted_count; slot++) {
+        name = wanted[slot]
+        if (toupper(substr(line, 1, length(name) + 1)) == toupper(name ":")) { return name }
+      }
+      return ""
+    }
+    BEGIN { wanted_count = split("Conflicts Replaces", wanted, " "); in_paragraph = 1 }
+    in_paragraph && /^$/ { in_paragraph = 0 }
+    in_paragraph {
+      paragraph[++paragraph_count] = $0
+      if ($0 ~ /^[ \t]/) {
+        if (current != "") { last_line[current] = paragraph_count }
+      } else {
+        current = field_at($0)
+        if (current != "") { last_line[current] = paragraph_count }
+      }
+      next
+    }
+    { rest[++rest_count] = $0 }
+    END {
+      for (slot = 1; slot <= wanted_count; slot++) {
+        name = wanted[slot]
+        if (name in last_line) {
+          paragraph[last_line[name]] = paragraph[last_line[name]] ", " list
+        } else {
+          paragraph[++paragraph_count] = name ": " list
         }
       }
-      print
+      for (line = 1; line <= paragraph_count; line++) { print paragraph[line] }
+      for (line = 1; line <= rest_count; line++) { print rest[line] }
     }
-    END {
-      for (slot in wanted) {
-        if (!(wanted[slot] in seen)) { print wanted[slot] ": " list }
-      }
-    }
-  ' "${control_dir}/control/control" >"${control_dir}/control/control.rewritten"
-  mv -f "${control_dir}/control/control.rewritten" "${control_dir}/control/control"
-  tar "${control_compression[@]}" -cf "${control_dir}/${control_member}" \
-    -C "${control_dir}/control" .
+  ' "${control_dir}/control" >"${control_dir}/control.rewritten"
+  mv -f "${control_dir}/control.rewritten" "${control_dir}/control"
+  tar "${control_compression[@]}" -cf "${output_dir}/${control_member}" -C "${control_dir}" .
 
-  # ar replaces a member in place, so debian-binary stays first and the data
-  # member keeps the bytes it was built with.  Writing the archive headers,
-  # member sizes and even-byte padding by hand is what this avoids.
-  cp "${source_deb}" "${output_deb}"
-  ar r "${output_deb}" "${control_dir}/${control_member}"
-  rm -rf "${control_dir}"
+  # Assemble the members directly.  Rebuilding with dpkg-deb would recompress
+  # a gigabyte that did not change, and "cp" plus "ar r" would hold two copies
+  # of it at once - ar writes its temporary archive in the working directory,
+  # which is not even a path this script chose.  Streaming the data member
+  # through keeps one copy, on a filesystem the caller picked.
+  printf '!<arch>\n' >"${output_deb}"
+  append_ar_member() {
+    local name="$1"
+    local size="$2"
+    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${name}/" 0 0 0 100644 "${size}" >>"${output_deb}"
+  }
+  for member in debian-binary "${control_member}" "${data_member}"; do
+    if [[ "${member}" == "${control_member}" ]]; then
+      member_size="$(stat -c '%s' "${output_dir}/${control_member}")"
+      append_ar_member "${member}" "${member_size}"
+      cat "${output_dir}/${control_member}" >>"${output_deb}"
+    else
+      member_size="$(ar tv "${source_deb}" | awk -v member="${member}" '$NF == member {print $3; exit}')"
+      append_ar_member "${member}" "${member_size}"
+      ar p "${source_deb}" "${member}" >>"${output_deb}"
+    fi
+    if (( member_size % 2 != 0 )); then printf '\n' >>"${output_deb}"; fi
+  done
+  rm -rf "${control_dir:?}" "${output_dir:?}/${control_member}"
 
+  # dpkg-deb reads the control member, so this proves the archive it was
+  # written into is one dpkg can walk.
   dpkg-deb --info "${output_deb}" >/dev/null
   for relationship in Conflicts Replaces; do
     metadata="$(dpkg-deb -f "${output_deb}" "${relationship}")"
@@ -1133,26 +1206,18 @@ requested_hstream_version="$(dpkg-deb -f "${HSTREAM_DEB}" Version)"
 # own conflicts with the legacy binaries/sample-data packages.
 old_deepstream_packages=()
 if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
-  while IFS=$'\t' read -r package status; do
-    package_name="${package%%:*}"
-    if [[ "${status:0:1}" == "i" && "${status:1:1}" != "n" &&
-          "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
-          "${package_name}" != "${DEEPSTREAM_PACKAGE}" ]]; then
-      old_deepstream_packages+=("${package}")
-    fi
-  done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
+  while IFS= read -r package_name; do
+    old_deepstream_packages+=("${package_name}")
+  done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null \
+    | superseded_deepstream_packages "${DEEPSTREAM_PACKAGE}" || true)
 fi
 install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
   transition_dir="$(mktemp -d /tmp/hstream-deepstream-transition.XXXXXX)"
-  transition_relationships=()
-  for package in "${old_deepstream_packages[@]}"; do
-    transition_relationships+=("${package%%:*}")
-  done
   install_deepstream_deb="${transition_dir}/${DEEPSTREAM_PACKAGE}-transition.deb"
   build_deepstream_transition_deb "${DEEPSTREAM_DEB}" "${install_deepstream_deb}" \
-    "${transition_relationships[@]}"
+    "${old_deepstream_packages[@]}"
 fi
 
 install_debs=()
@@ -1166,7 +1231,7 @@ while read -r removed_package; do
   allowed=0
   if [[ "${removed_package}" == hmstream ]]; then allowed=1; fi
   for package in "${old_deepstream_packages[@]}"; do
-    if [[ "${removed_package}" == "${package%%:*}" ]]; then allowed=1; break; fi
+    if [[ "${removed_package}" == "${package}" ]]; then allowed=1; break; fi
   done
   if [[ "${allowed}" -eq 0 ]]; then
     echo "ERROR: this installation would remove dependent package ${removed_package}; refusing." >&2

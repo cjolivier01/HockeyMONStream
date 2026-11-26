@@ -697,24 +697,29 @@ expect_equal "${installer_rejection}" \
 # records as 9.1's, which it refuses without a Replaces.  NVIDIA's artifacts
 # declare Conflicts and no Replaces at all, so build the transition copy the
 # installer builds and read the fields back off it.
-if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null; then
-  echo "deploy_test: SKIPPING DeepStream transition checks (dpkg-deb or ar unavailable)" >&2
+# zstd is what NVIDIA compresses these artifacts with, and the installer runs
+# tar against the executable rather than dpkg-deb's own library.
+if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null ||
+   ! command -v zstd >/dev/null; then
+  echo "deploy_test: SKIPPING DeepStream transition checks (dpkg-deb, ar or zstd unavailable)" >&2
 else
   transition_root="$(mktemp -d)"
   trap 'rm -rf "${transition_root}"' EXIT
 
-  # $1 is what the artifact declares before the rewrite; the payload stands in
-  # for the gigabyte of DeepStream the copy has to carry through untouched.
+  # $1 is what the artifact declares before the rewrite, written verbatim so a
+  # case can hand over a folded field or a trailing blank line; the payload
+  # stands in for the gigabyte of DeepStream the copy carries through.
   make_transition_fixture() {
     local relationships="$1" path="$2"
-    local root="${transition_root}/build/$(basename "${path}" .deb)"
+    local root
+    root="${transition_root}/build/$(basename "${path}" .deb)"
     mkdir -p "${root}/DEBIAN" "${root}/opt/nvidia/deepstream"
     head -c 4096 /dev/urandom >"${root}/opt/nvidia/deepstream/payload.bin"
     {
       printf 'Package: deepstream-9.2\nVersion: 9.2.0-1\nArchitecture: amd64\n'
       printf 'Maintainer: test <test@example.invalid>\n'
-      [[ -n "${relationships}" ]] && printf '%s\n' "${relationships}"
       printf 'Description: deploy_test fixture\n'
+      [[ -n "${relationships}" ]] && printf '%s\n' "${relationships}"
     } >"${root}/DEBIAN/control"
     dpkg-deb -Zzstd --build --root-owner-group "${root}" "${path}" >/dev/null
   }
@@ -772,6 +777,70 @@ Replaces: deepstream-sample-data' "${transition_root}/both.deb"
     "deepstream-9.1" "a Conflicts is added to an artifact that declares none"
   expect_equal "$(dpkg-deb -f "${transition_root}/bare-transition.deb" Replaces)" \
     "deepstream-9.1" "a Replaces is added to an artifact that declares none"
+
+  # A control file that ends with the paragraph terminator.  An added field
+  # printed after it starts a second paragraph, and dpkg rejects the file for
+  # a missing Package rather than reading the relationship.
+  make_transition_fixture 'Conflicts: libglapi-amber
+' "${transition_root}/terminated.deb"
+  build_transition "${transition_root}/terminated.deb" \
+    "${transition_root}/terminated-transition.deb" deepstream-9.1 \
+    || fail "the installer could not add a field to a terminated paragraph"
+  expect_equal "$(dpkg-deb -f "${transition_root}/terminated-transition.deb" Replaces)" \
+    "deepstream-9.1" "an added field joins the paragraph instead of starting a second one"
+  expect_equal "$(dpkg-deb -f "${transition_root}/terminated-transition.deb" Package)" \
+    "deepstream-9.2" "the paragraph a trailing blank line ends is still the package's"
+
+  # A relationship folded over continuation lines: the list belongs after the
+  # last of them, not after the comma that ends the first.
+  make_transition_fixture 'Conflicts: libglapi-amber,
+ deepstream-binaries-x86' "${transition_root}/folded.deb"
+  build_transition "${transition_root}/folded.deb" "${transition_root}/folded-transition.deb" \
+    deepstream-9.1 || fail "the installer could not extend a folded relationship"
+  expect_equal "$(dpkg-deb -f "${transition_root}/folded-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-binaries-x86, deepstream-9.1" \
+    "a folded Conflicts is extended at its end"
+
+  # dpkg-deb --info and -f read the control member alone, so an artifact that
+  # lost its payload would pass every field check the helper makes.
+  cp "${transition_root}/nvidia.deb" "${transition_root}/payloadless.deb"
+  ar d "${transition_root}/payloadless.deb" "$(ar t "${transition_root}/payloadless.deb" \
+    | grep '^data[.]tar[.]')"
+  if build_transition "${transition_root}/payloadless.deb" \
+    "${transition_root}/payloadless-transition.deb" deepstream-9.1 >/dev/null 2>&1; then
+    fail "the installer built a transition artifact out of a package with no payload"
+  fi
+
+  # With no release to name, the verification has nothing to look for and
+  # would pass an artifact carrying two empty fields.
+  if build_transition "${transition_root}/nvidia.deb" \
+    "${transition_root}/empty-transition.deb" >/dev/null 2>&1; then
+    fail "the installer built a transition artifact against no release at all"
+  fi
+
+  # Which installed releases the copy has to name.  dpkg's current status is
+  # what says a release still owns files: a held one and one an interrupted
+  # apt already marked for removal both do.
+  superseded_with() {
+    HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+      # shellcheck disable=SC1090
+      source "$1"
+      superseded_deepstream_packages "$2"
+    ' _ "${SCRIPT_DIR}/install_deb.sh" "$1"
+  }
+  expect_equal "$(printf 'deepstream-9.1:amd64\tii \ndeepstream-9.2:amd64\tii \n' \
+    | superseded_with deepstream-9.2)" "deepstream-9.1" \
+    "the release being installed is not superseded by itself"
+  expect_equal "$(printf 'deepstream-9.1:amd64\thi \n' | superseded_with deepstream-9.2)" \
+    "deepstream-9.1" "a held release still owns its files"
+  expect_equal "$(printf 'deepstream-9.1:amd64\tri \n' | superseded_with deepstream-9.2)" \
+    "deepstream-9.1" "a release marked for removal still owns its files until it is gone"
+  expect_equal "$(printf 'deepstream-8.0:amd64\trc \ndeepstream-9.1:amd64\tpn \n' \
+    | superseded_with deepstream-9.2)" "" \
+    "a release down to config files or gone entirely owns none"
+  expect_equal "$(printf 'deepstream-sample-data\tii \ndeepstream-binaries-x86\tii \n' \
+    | superseded_with deepstream-9.2)" "" \
+    "split packages are left to the artifact's own conflicts"
 
   rm -rf "${transition_root}"
   trap - EXIT
