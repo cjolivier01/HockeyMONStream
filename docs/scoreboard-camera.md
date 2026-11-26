@@ -29,6 +29,19 @@ operation timeouts fail the run rather than substituting stale pixels. The
 intentional negative-offset delay is the only interval without an overlay.
 Fractional-rate timestamps use integer nanoseconds; one-nanosecond differences
 from independent timestamp/duration rounding join at the next actual source PTS.
+MP4 timestamps are restored to their declared track ticks when qtdemux's
+composition-offset subtraction introduces a one-nanosecond rounding error.
+Seeks decode keyframe preroll and retain original presentation intervals; they
+do not clip the preceding picture to the new start time.
+
+The game cameras own the output clock, resolution and format. The scoreboard
+never participates in choosing the stitched frame rate. Selection happens at
+overlay time: a 30 fps scoreboard repeats for 60 fps output; a 120 fps scoreboard
+contributes every other frame to 60 fps output. Non-integer ratios use the same
+presentation-interval rule. H.264 8-bit and HEVC 10-bit SDR scoreboard sources can
+have different dimensions and frame rates from the main cameras; their crop is
+converted on the GPU to the compositor's format. This intentional sampling of
+the scoreboard does not drop or duplicate game/output frames.
 
 All shipped settings live under `rink.scoreboard.camera` in `configs/baseline.yaml`.
 A recorded override looks like:
@@ -88,6 +101,10 @@ EOS and epochs. `camera_decoder_test` checks H.264/HEVC, full-frame versus GPU-c
 pixels, retained images, partial-read shutdown, repeated seeks, chapters,
 60000/1001 timestamps and RTSP. `scoreboard_camera_test` exercises the actual
 NVIDIA stitcher and cropper with positive/negative offsets and seeks.
+Mixed-source cases cover 25-to-50, 30-to-60, 120-to-60 and 24-to-60 fps, different
+source dimensions, and 8/10-bit inputs while asserting unchanged game PTS and
+frame counts. The shared decoder/session tests also check skipped and repeated
+scoreboard intervals on NVIDIA and AMD.
 `program:gpu_test` covers the independent overlay in AMD/NVIDIA output kernels.
 Desktop and browser interaction tests cover source-coordinate crops, offset
 precision, maximize/restore, cancellation and wheel guards. The optional browser

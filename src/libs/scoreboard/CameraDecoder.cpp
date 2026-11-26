@@ -1,5 +1,6 @@
 #include "hstream/src/libs/scoreboard/CameraDecoder.h"
 #include "hstream/src/libs/gpu/vaapi/VaElement.h"
+#include "hstream/src/libs/media/Mp4VideoTrack.h"
 
 #include <gst/app/gstappsink.h>
 #include <gst/base/gstbasetransform.h>
@@ -32,6 +33,8 @@ struct CameraDecoder::Impl {
   absl::Status failure;
   bool opened = false;
   GstClockTime previous = GST_CLOCK_TIME_NONE;
+  GstClockTime requested_start = 0;
+  int time_base_n = 0, time_base_d = 0;
   std::atomic<guint32> decoder_seek_sequence{GST_SEQNUM_INVALID};
   explicit Impl(const CameraDecoderConfig& value) : config(value) {}
   void FlushOutput() {
@@ -248,7 +251,7 @@ struct CameraDecoder::Impl {
       auto* event = gst_event_new_seek(
           1.0,
           GST_FORMAT_TIME,
-          GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+          GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_BEFORE),
           GST_SEEK_TYPE_SET,
           time,
           GST_SEEK_TYPE_NONE,
@@ -415,6 +418,12 @@ absl::Status CameraDecoder::OpenFile(const std::filesystem::path& path, GstClock
     return impl_->Retire(
         absl::InvalidArgumentError("Scoreboard reader requires a regular local file and finite seek time"));
   const auto deadline = impl_->Deadline();
+  const auto track = media::ReadMp4VideoTrack(
+      path, impl_->config.operation_timeout, [this] { return impl_->cancelled.load(std::memory_order_relaxed); });
+  if (!track.ok())
+    return impl_->Retire(track.status());
+  impl_->time_base_n = track->time_base_n;
+  impl_->time_base_d = track->time_base_d;
   // GStreamer 1.24's VA transform closes its filter on PAUSED -> READY but
   // opens it only on NULL -> READY. READY alone cannot renegotiate a chapter.
   // Keep the elements, but fully reset their driver state before changing files.
@@ -432,6 +441,7 @@ absl::Status CameraDecoder::OpenFile(const std::filesystem::path& path, GstClock
   // NULL retired all decoder surfaces. Starting at zero needs no flushing
   // seek, and avoids racing a short file's demux task against its own preroll.
   impl_->previous = GST_CLOCK_TIME_NONE;
+  impl_->requested_start = start;
   status = start ? impl_->Seek(start, deadline) : impl_->State(GST_STATE_PLAYING, deadline);
   if (status.ok())
     impl_->opened = true;
@@ -544,6 +554,19 @@ absl::StatusOr<std::optional<CameraDecodedFrame>> CameraDecoder::Read() {
     frame.time = impl_->config.live ? gst_segment_to_running_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer))
                                     : gst_segment_to_stream_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer));
     frame.duration = GST_BUFFER_DURATION(buffer);
+    if (!impl_->config.live && GST_CLOCK_TIME_IS_VALID(frame.time)) {
+      // qtdemux rounds a composition offset and its segment origin separately.
+      // Their subtraction can move an original MP4 PTS by one nanosecond,
+      // incorrectly repeating the preceding frame at a shared clock boundary.
+      // Recover the original track tick only within that rounding tolerance;
+      // do not infer a constant frame rate or hide real timestamp gaps.
+      const auto unit = uint64_t(impl_->time_base_n) * GST_SECOND;
+      const auto tick = gst_util_uint64_scale_round(frame.time, impl_->time_base_d, unit);
+      const auto original = gst_util_uint64_scale(tick, unit, impl_->time_base_d);
+      const auto difference = original > frame.time ? original - frame.time : frame.time - original;
+      if (difference <= 1)
+        frame.time = original;
+    }
     if (!GST_CLOCK_TIME_IS_VALID(frame.time) || (!impl_->config.live && !GST_CLOCK_TIME_IS_VALID(frame.duration)) ||
         !frame.duration || (GST_CLOCK_TIME_IS_VALID(impl_->previous) && frame.time <= impl_->previous))
       return impl_->Retire(
@@ -552,6 +575,13 @@ absl::StatusOr<std::optional<CameraDecodedFrame>> CameraDecoder::Read() {
               std::to_string(frame.time) + " previous=" + std::to_string(impl_->previous) +
               " duration=" + std::to_string(frame.duration)));
     impl_->previous = frame.time;
+    // Keep original presentation intervals through seeks. An accurate segment
+    // seek can clip the preceding picture to the requested time, producing a
+    // duplicate boundary after nanosecond normalization. Decode keyframe
+    // preroll and discard only pictures ending before the requested interval.
+    if (!impl_->config.live && frame.time < impl_->requested_start &&
+        frame.duration <= impl_->requested_start - frame.time)
+      continue;
     return std::optional<CameraDecodedFrame>(std::move(frame));
   }
 }

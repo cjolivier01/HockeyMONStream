@@ -199,6 +199,146 @@ void Benchmark(
               << " height=" << track.height << " seconds=" << seconds << " fps=" << 100 / seconds << std::endl;
   }
 }
+void CheckMixedOverlay(
+    const std::filesystem::path& baseline,
+    unsigned scoreboard_fps,
+    unsigned game_fps,
+    bool ten_bit,
+    cudaStream_t stream) {
+  hm::media::test::Directory directory;
+  const auto path = directory.path / "scoreboard.mp4";
+  hm::media::test::Ffmpeg(
+      {"-f",
+       "lavfi",
+       "-i",
+       "testsrc2=s=384x192:r=" + std::to_string(scoreboard_fps) + ":d=1",
+       "-c:v",
+       ten_bit ? "libx265" : "libx264",
+       "-pix_fmt",
+       ten_bit ? "yuv420p10le" : "yuv420p",
+       "-preset",
+       "ultrafast",
+       "-bf",
+       "2",
+       ten_bit ? "-x265-params" : "-x264-params",
+       ten_bit
+           ? "pools=1:frame-threads=1:log-level=error:colorprim=bt709:transfer=bt709:colormatrix=bt709:range=limited"
+           : "colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange=off",
+       path.string()});
+  YAML::Node prepared;
+  prepared["resize_filter"] = "bilinear";
+  prepared["sharpen_amount"] = 0;
+  prepared["camera"] = YAML::Clone(YAML::LoadFile(baseline.string())["rink"]["scoreboard"]["camera"]);
+  auto camera = prepared["camera"];
+  camera["enabled"] = true;
+  camera["files"].push_back(path.string());
+  camera["source_dimensions"] = YAML::Load("[384,192]");
+  camera["polygon"] = YAML::Load("[[96,40],[223,40],[223,103],[96,103]]");
+  prepared["game_directory"] = directory.path.string();
+  const auto config = *Take(
+      hm::scoreboard::ResolveCameraConfig(camera, directory.path, hm::scoreboard::CameraDecodeBackend::kNvidia, 0, {}));
+  auto decoder = Take(hm::scoreboard::CameraDecoder::Create(config.decoder));
+  Check(decoder->OpenFile(path, 0).ok(), "Reference reader failed");
+  auto images = Take(hm::scoreboard::CameraImages::Create(0, 128, 64, scoreboard_fps));
+  std::vector<std::shared_ptr<const hm::gpu::Image>> reference;
+  for (unsigned i = 0; i < scoreboard_fps; ++i) {
+    auto frame = Take(decoder->Read());
+    Check(frame.has_value(), "Reference ended early");
+    reference.push_back(Take(images->Copy(*frame, config.decoder.region)));
+  }
+  decoder.reset();
+  {
+    Surface input(320, 192, 2), stitched(320, 192), output(320, 192), expected(320, 192);
+    std::vector<unsigned char> background(320 * 192 * 4, 32);
+    for (size_t i = 3; i < background.size(); i += 4)
+      background[i] = 255;
+    input.Pixels(&background);
+    input.Pixels(&background, 1);
+    hm::stitcher::StitcherPriv stitcher(0, 2);
+    Check(hm::stitcher::StitcherOutputFailureTestPeer::Prepare(stitcher, stream, 320, 192), "Stitcher setup failed");
+    Cropper cropper(stream);
+    Check(cropper.SetProperty({"scoreboard-camera", Encoded(prepared)}), "Camera property rejected");
+    const auto plan = Take(
+        hm::scoreboard::MakePlan(
+            config.decoder.region.polygon, 128, 64, 320, 192, 80, 40, hm::scoreboard::Position::kUpperLeft));
+    for (int offset_frames : {0, int(game_fps / 10), -int(game_fps / 10)}) {
+      prepared["camera"]["start_offset"] = offset_frames > 0 ? "00:00:00.1000"
+          : offset_frames < 0                                ? "-00:00:00.1000"
+                                                             : "00:00:00.0000";
+      Check(cropper.SetProperty({"scoreboard-camera", Encoded(prepared)}), "Offset config rejected");
+      for (unsigned origin : {0u, game_fps / 5, game_fps * 2 / 5}) {
+        auto* flushing = gst_event_new_flush_start();
+        Check(cropper.HandleEvent(flushing), "Cropper flush failed");
+        gst_event_unref(flushing);
+        auto* resumed = gst_event_new_flush_stop(TRUE);
+        Check(stitcher.HandleEvent(resumed), "Stitcher seek reset failed");
+        Check(cropper.HandleEvent(resumed), "Cropper seek reset failed");
+        gst_event_unref(resumed);
+        Check(
+            cropper.SetProperty(
+                {"scoreboard-camera-timeline", std::to_string(origin) + "," + std::to_string(game_fps) + ",1"}),
+            "Game seek timeline rejected");
+        for (unsigned i = 0; i < game_fps - origin - std::max(0, offset_frames); ++i) {
+          auto* batch = nvds_create_batch_meta(2);
+          for (unsigned camera_index = 0; camera_index < 2; ++camera_index) {
+            auto* frame = nvds_acquire_frame_meta_from_pool(batch);
+            frame->batch_id = frame->source_id = frame->pad_index = camera_index;
+            frame->buf_pts = gst_util_uint64_scale(i, GST_SECOND, game_fps);
+            frame->frame_num = i;
+            frame->num_surfaces_per_frame = 1;
+            frame->source_frame_width = 320;
+            frame->source_frame_height = 192;
+            nvds_add_frame_meta_to_batch(batch, frame);
+          }
+          const auto stitched_status = stitcher.GenerateOutput(batch, input.value, stitched.value);
+          Check(stitched_status.ok(), stitched_status.ToString());
+          Check(
+              batch->num_frames_in_batch == 1 && stitched.value->numFilled == 1,
+              "Scoreboard camera changed the two-input stitch batch");
+          const auto status = cropper.GenerateOutput(batch, stitched.value, output.value);
+          auto* final = static_cast<NvDsFrameMeta*>(batch->frame_meta_list->data);
+          Check(
+              batch->num_frames_in_batch == 1 && final->frame_num == int(i) &&
+                  final->buf_pts == gst_util_uint64_scale(i, GST_SECOND, game_fps),
+              "Scoreboard rate changed the main frame count or presentation clock");
+          nvds_destroy_batch_meta(batch);
+          Check(status.ok(), status.ToString());
+          Check(cudaStreamQuery(stream) == cudaSuccess, "Cropper released scoreboard before GPU completion");
+          expected.Pixels(&background);
+#ifdef __aarch64__
+          hm::surface::EglSurfaceMapper mapper(expected.value, 0, false);
+          Cuda(mapper.status());
+          auto view = mapper.get_surface();
+#else
+          hm::surface::Surface view(&expected.value->surfaceList[0]);
+#endif
+          const int source_frame = int(origin + i) + offset_frames;
+          if (source_frame >= 0)
+            Cuda(
+                hm::playcropper::CompositeScoreboard(
+                    *reference[source_frame * scoreboard_fps / game_fps],
+                    {view.dataptr(), view.pitch(), 320, 192, hm::gpu::PixelFormat::kRgba8},
+                    plan,
+                    stream));
+          Cuda(cudaStreamSynchronize(stream));
+          const auto actual = output.Pixels(), wanted = expected.Pixels();
+          for (int y = plan.top; y < plan.top + plan.height; ++y)
+            for (int x = plan.left; x < plan.left + plan.width; ++x)
+              for (int c = 0; c < 4; ++c)
+                if (actual[(y * 320 + x) * 4 + c] != wanted[(y * 320 + x) * 4 + c])
+                  Check(
+                      false,
+                      "Wrong scoreboard pixels: source_fps=" + std::to_string(scoreboard_fps) +
+                          " game_fps=" + std::to_string(game_fps) + " ten_bit=" + std::to_string(ten_bit) +
+                          " origin=" + std::to_string(origin) + " frame=" + std::to_string(i) +
+                          " offset=" + std::to_string(offset_frames) + " source=" + std::to_string(source_frame) +
+                          " actual=" + std::to_string(actual[(y * 320 + x) * 4 + c]) +
+                          " expected=" + std::to_string(wanted[(y * 320 + x) * 4 + c]));
+        }
+      }
+    }
+  }
+}
 } // namespace
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
@@ -214,124 +354,10 @@ int main(int argc, char** argv) {
       Cuda(cudaStreamDestroy(stream));
       return 0;
     }
-    hm::media::test::Directory directory;
-    const auto path = directory.path / "scoreboard.mp4";
-    hm::media::test::Ffmpeg(
-        {"-f",
-         "lavfi",
-         "-i",
-         "testsrc2=s=384x192:r=25:d=1",
-         "-c:v",
-         "libx264",
-         "-preset",
-         "ultrafast",
-         "-bf",
-         "2",
-         "-x264-params",
-         "colorprim=bt709:transfer=bt709:colormatrix=bt709:fullrange=off",
-         path.string()});
-    YAML::Node prepared;
-    prepared["resize_filter"] = "bilinear";
-    prepared["sharpen_amount"] = 0;
-    prepared["camera"] = YAML::Clone(YAML::LoadFile(argv[1])["rink"]["scoreboard"]["camera"]);
-    auto camera = prepared["camera"];
-    camera["enabled"] = true;
-    camera["files"].push_back(path.string());
-    camera["source_dimensions"] = YAML::Load("[384,192]");
-    camera["polygon"] = YAML::Load("[[96,40],[223,40],[223,103],[96,103]]");
-    prepared["game_directory"] = directory.path.string();
-    const auto config = *Take(
-        hm::scoreboard::ResolveCameraConfig(
-            camera, directory.path, hm::scoreboard::CameraDecodeBackend::kNvidia, 0, {}));
-    auto decoder = Take(hm::scoreboard::CameraDecoder::Create(config.decoder));
-    Check(decoder->OpenFile(path, 0).ok(), "Reference reader failed");
-    auto images = Take(hm::scoreboard::CameraImages::Create(0, 128, 64, 25));
-    std::vector<std::shared_ptr<const hm::gpu::Image>> reference;
-    for (unsigned i = 0; i < 25; ++i) {
-      auto frame = Take(decoder->Read());
-      Check(frame.has_value(), "Reference ended early");
-      reference.push_back(Take(images->Copy(*frame, config.decoder.region)));
-    }
-    decoder.reset();
-    {
-      Surface input(320, 192, 2), stitched(320, 192), output(320, 192), expected(320, 192);
-      std::vector<unsigned char> background(320 * 192 * 4, 32);
-      for (size_t i = 3; i < background.size(); i += 4)
-        background[i] = 255;
-      input.Pixels(&background);
-      input.Pixels(&background, 1);
-      hm::stitcher::StitcherPriv stitcher(0, 2);
-      Check(hm::stitcher::StitcherOutputFailureTestPeer::Prepare(stitcher, stream, 320, 192), "Stitcher setup failed");
-      Cropper cropper(stream);
-      Check(cropper.SetProperty({"scoreboard-camera", Encoded(prepared)}), "Camera property rejected");
-      const auto plan = Take(
-          hm::scoreboard::MakePlan(
-              config.decoder.region.polygon, 128, 64, 320, 192, 80, 40, hm::scoreboard::Position::kUpperLeft));
-      for (int offset_frames : {0, 5, -5}) {
-        prepared["camera"]["start_offset"] = offset_frames > 0 ? "00:00:00.1000"
-            : offset_frames < 0                                ? "-00:00:00.1000"
-                                                               : "00:00:00.0000";
-        Check(cropper.SetProperty({"scoreboard-camera", Encoded(prepared)}), "Offset config rejected");
-        for (unsigned origin : {0, 10, 20}) {
-          auto* flushing = gst_event_new_flush_start();
-          Check(cropper.HandleEvent(flushing), "Cropper flush failed");
-          gst_event_unref(flushing);
-          auto* resumed = gst_event_new_flush_stop(TRUE);
-          Check(stitcher.HandleEvent(resumed), "Stitcher seek reset failed");
-          Check(cropper.HandleEvent(resumed), "Cropper seek reset failed");
-          gst_event_unref(resumed);
-          Check(
-              cropper.SetProperty({"scoreboard-camera-timeline", std::to_string(origin) + ",50,1"}),
-              "Game seek timeline rejected");
-          for (unsigned i = 0; i < 50 - origin - std::max(0, offset_frames); ++i) {
-            auto* batch = nvds_create_batch_meta(2);
-            for (unsigned camera_index = 0; camera_index < 2; ++camera_index) {
-              auto* frame = nvds_acquire_frame_meta_from_pool(batch);
-              frame->batch_id = frame->source_id = frame->pad_index = camera_index;
-              frame->buf_pts = i * 20 * GST_MSECOND;
-              frame->frame_num = i;
-              frame->num_surfaces_per_frame = 1;
-              frame->source_frame_width = 320;
-              frame->source_frame_height = 192;
-              nvds_add_frame_meta_to_batch(batch, frame);
-            }
-            const auto stitched_status = stitcher.GenerateOutput(batch, input.value, stitched.value);
-            Check(stitched_status.ok(), stitched_status.ToString());
-            Check(
-                batch->num_frames_in_batch == 1 && stitched.value->numFilled == 1,
-                "Scoreboard camera changed the two-input stitch batch");
-            const auto status = cropper.GenerateOutput(batch, stitched.value, output.value);
-            nvds_destroy_batch_meta(batch);
-            Check(status.ok(), status.ToString());
-            Check(cudaStreamQuery(stream) == cudaSuccess, "Cropper released scoreboard before GPU completion");
-            expected.Pixels(&background);
-#ifdef __aarch64__
-            hm::surface::EglSurfaceMapper mapper(expected.value, 0, false);
-            Cuda(mapper.status());
-            auto view = mapper.get_surface();
-#else
-            hm::surface::Surface view(&expected.value->surfaceList[0]);
-#endif
-            const int source_frame = int(origin + i) + offset_frames;
-            if (source_frame >= 0)
-              Cuda(
-                  hm::playcropper::CompositeScoreboard(
-                      *reference[source_frame / 2],
-                      {view.dataptr(), view.pitch(), 320, 192, hm::gpu::PixelFormat::kRgba8},
-                      plan,
-                      stream));
-            Cuda(cudaStreamSynchronize(stream));
-            const auto actual = output.Pixels(), wanted = expected.Pixels();
-            for (int y = plan.top; y < plan.top + plan.height; ++y)
-              for (int x = plan.left; x < plan.left + plan.width; ++x)
-                for (int c = 0; c < 4; ++c)
-                  Check(
-                      actual[(y * 320 + x) * 4 + c] == wanted[(y * 320 + x) * 4 + c],
-                      "Real cropper overlaid the wrong camera frame after playback/seek");
-          }
-        }
-      }
-    }
+    CheckMixedOverlay(argv[1], 25, 50, false, stream);
+    CheckMixedOverlay(argv[1], 30, 60, true, stream);
+    CheckMixedOverlay(argv[1], 120, 60, true, stream);
+    CheckMixedOverlay(argv[1], 24, 60, false, stream);
     Cuda(cudaStreamDestroy(stream));
     return 0;
   } catch (const std::exception& error) {

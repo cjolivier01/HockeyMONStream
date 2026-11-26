@@ -37,7 +37,8 @@ struct CameraDecodedFrame {
   bool cropped = false;
 };
 // Independent video-only hardware decode, with bounded GPU output buffering.
-// No frame dropping, software fallback, audio decode or stitch-mux admission.
+// No leaky queues, software fallback, audio decode or stitch-mux admission.
+// The compositor samples this independent timeline at the game output rate.
 // One serialized owner except Cancel(); returned samples own their surfaces.
 class CameraDecoder {
  public:
@@ -52,6 +53,8 @@ class CameraDecoder {
       GstClockTime base_time,
       unsigned latency_ms,
       bool ntp_sync);
+  // Decode keyframe preroll and return the first original interval covering
+  // time, rather than clipping its timestamp to an accurate-seek segment.
   absl::Status Seek(GstClockTime time);
   absl::StatusOr<std::optional<CameraDecodedFrame>> Read();
   void Cancel() noexcept;

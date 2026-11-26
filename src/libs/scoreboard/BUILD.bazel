@@ -128,6 +128,7 @@ cc_library(
     deps = [
         ":camera_region",
         "//src/libs/gpu/vaapi:va_element",
+        "//src/libs/media:mp4_video_track",
         "@com_google_absl//absl/status:statusor",
         "@gstreamer",
     ],

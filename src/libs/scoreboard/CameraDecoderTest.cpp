@@ -19,12 +19,13 @@ T Take(absl::StatusOr<T> result) {
 void Status(const absl::Status& status) {
   Check(status.ok(), status.ToString());
 }
-void Video(const std::filesystem::path& path, bool hevc, bool fractional = false) {
+void Video(const std::filesystem::path& path, bool hevc, bool fractional = false, unsigned integer_rate = 25) {
   std::vector<std::string> args{
       "-f",
       "lavfi",
       "-i",
-      fractional ? "testsrc2=s=384x216:r=60000/1001:d=1" : "testsrc2=s=384x216:r=25:d=1",
+      fractional ? "testsrc2=s=384x216:r=60000/1001:d=1"
+                 : "testsrc2=s=384x216:r=" + std::to_string(integer_rate) + ":d=1",
       "-f",
       "lavfi",
       "-i",
@@ -186,9 +187,32 @@ void CheckSession(const std::filesystem::path& path, const CameraDecoderConfig& 
   Take(stopped->Select(config.game_start_ns));
   stopped->Cancel();
   stopped.reset();
+
+  auto reference_decoder = Take(CameraDecoder::Create(decoder));
+  Status(reference_decoder->OpenFile(path, 0));
+  auto images = Take(CameraImages::Create(decoder.gpu_id, decoder.region.width, decoder.region.height, 1));
+  std::vector<std::vector<uint16_t>> reference;
+  for (unsigned index = 0; index < 25; ++index) {
+    auto frame = Take(reference_decoder->Read());
+    Check(frame.has_value(), "Mixed-rate reference ended early");
+    reference.push_back(Pixels(*Take(images->Copy(*frame, decoder.region))));
+  }
+  reference_decoder.reset();
+  images.reset();
+  config.game_start_ns = config.offset_ns;
+  for (unsigned output_fps : {10u, 30u, 60u}) {
+    ++config.epoch;
+    auto mixed = Take(CameraSession::Start(config));
+    for (unsigned index = 0; index < output_fps * 2; ++index) {
+      const auto time = gst_util_uint64_scale(index, GST_SECOND, output_fps);
+      Check(
+          Pixels(*Take(mixed->Select(config.offset_ns + time))) == reference[(index * 25 / output_fps) % 25],
+          "Mixed-rate output did not repeat/skip the correct timestamp-matched scoreboard frame");
+    }
+  }
 }
-void CheckFractionalSession(const std::filesystem::path& path, const CameraDecoderConfig& config) {
-  Video(path, false, true);
+void CheckFractionalSession(const std::filesystem::path& path, const CameraDecoderConfig& config, bool hevc) {
+  Video(path, hevc, !hevc, 30);
   auto decoder = Take(CameraDecoder::Create(config));
   Status(decoder->OpenFile(path, 0));
   auto images = Take(CameraImages::Create(config.gpu_id, config.region.width, config.region.height, 1));
@@ -198,6 +222,9 @@ void CheckFractionalSession(const std::filesystem::path& path, const CameraDecod
     auto frame = Take(decoder->Read());
     if (!frame)
       break;
+    Check(
+        frame->time == gst_util_uint64_scale(times.size(), uint64_t(hevc ? 1 : 1001) * GST_SECOND, hevc ? 30 : 60000),
+        "MP4 composition/segment rounding changed the original presentation timestamp");
     times.push_back(frame->time);
     pixels.push_back(Pixels(*Take(images->Copy(*frame, config.region))));
   }
@@ -209,7 +236,7 @@ void CheckFractionalSession(const std::filesystem::path& path, const CameraDecod
   session_config.chapters = {{path, 0, track.duration_ns, 0}, {path, track.duration_ns, track.duration_ns, 0}};
   session_config.epoch = 1;
   auto session = Take(CameraSession::Start(session_config));
-  Check(times.size() == 60, "Fractional-rate fixture lost frames");
+  Check(times.size() == (hevc ? 30u : 60u), "Fractional-rate fixture lost frames");
   for (int chapter = 0; chapter < 2; ++chapter) {
     const auto start = chapter * track.duration_ns;
     for (size_t index = 0; index < times.size(); ++index) {
@@ -361,9 +388,9 @@ int main(int argc, char** argv) {
       CheckCrop(path, config);
       std::cerr << "Session" << std::endl;
       CheckSession(path, config);
+      std::cerr << "Fractional rate" << std::endl;
+      CheckFractionalSession(directory.path / (hevc ? "hevc-clock.mp4" : "fractional.mp4"), config, hevc);
       if (!hevc) {
-        std::cerr << "Fractional rate" << std::endl;
-        CheckFractionalSession(directory.path / "fractional.mp4", config);
         std::cerr << "Live" << std::endl;
         CheckLive(config, path);
       }
