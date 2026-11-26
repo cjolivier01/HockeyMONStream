@@ -27,6 +27,7 @@
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 #include "configurator.h"
+#include "hstream/src/apps/apps-common/DetectorPreprocessingCheck.h"
 #include "hstream/src/apps/apps-common/PipelineStartupError.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
@@ -3212,6 +3213,21 @@ absl::Status PipelineApplication::createMainLoop(
       finish_runtime_seek("failed", "pipeline-stopped");
     }
   });
+
+  // Check the effective nvinfer settings after graph cleanup has been armed
+  // and before any graph can preroll its first source buffer.
+  for (const auto& app : app_contexts) {
+    auto* detector = app->pipeline.common_elements.primary_gie_bin.primary_gie;
+    if (!detector || app->config.primary_gie_config.plugin_type != NV_DS_GIE_PLUGIN_INFER)
+      continue;
+    guint gpu_id{};
+    gboolean tensor_input{};
+    g_object_get(detector, "gpu-id", &gpu_id, "input-tensor-meta", &tensor_input, nullptr);
+    if (!tensor_input && !checked_detector_gpus_.count(gpu_id)) {
+      HM_RETURN_IF_ERROR(hm::pipeline::CheckDetectorPreprocessing(gpu_id));
+      checked_detector_gpus_.insert(gpu_id);
+    }
+  }
 
   bool has_video_overlay_sink = false;
   for (const auto& app_ctx : app_contexts) {

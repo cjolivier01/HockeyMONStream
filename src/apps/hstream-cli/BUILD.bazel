@@ -47,6 +47,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/common:paced_playback_config",
     "//src/libs/stitching:rink_mask_input_store",
     "//src/apps/apps-common:pipeline_startup_error",
+    "//src/apps/apps-common:detector_preprocessing_check",
     ":web_preview_options",
     ":web_rotation_transaction",
     "//src/libs/tracking:playtracker_runtime_controls",

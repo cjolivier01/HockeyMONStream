@@ -323,3 +323,16 @@ class-aware precision/recall/F1, and inspect small-player misses and track
 fragmentation. `scripts/benchmark_model_precision.py` measures throughput, but
 its engine filename checks alone do not establish layer precision. Keep FP32
 as the default until representative held-out results justify a change.
+
+### Detector startup check
+
+Before playback, the NVIDIA CLI runs the installed DeepStream RGB-to-planar
+preprocessing kernel on two known pixels on each GPU used by native primary
+inference. A CUDA error, a zero tensor or incorrect channel values stops the run
+and reports the GPU and DeepStream version. An unsupported PTX error indicates
+that the driver cannot load the SDK's kernel for that GPU. Use a compatible
+driver or DeepStream build and start a new run.
+
+The check uses private device memory and a separate CUDA stream. It submits no
+video buffers, advances no source clocks and does not run again on seek.
+Externally supplied input tensors and inference-server graphs bypass it.
