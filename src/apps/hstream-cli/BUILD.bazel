@@ -224,6 +224,7 @@ cc_binary(
             "//src/libs/common:runtime_console", "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
             "//src/libs/stitching:stitching_algorithms",
             "//src/libs/stitching:stitching_core",
+            "//src/libs/scoreboard:camera_config",
         ],
         "//conditions:default": HSTREAM_CLI_DEPS,
     }),

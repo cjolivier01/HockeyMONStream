@@ -204,7 +204,11 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   guint output_height = 0;
   g_object_get(G_OBJECT(params->m_element), "output-width", &output_width, "output-height", &output_height, NULL);
   runtime_output_size_ = !(output_width && output_height);
-  return Super::PreCapsInit(params);
+  scoreboard_camera_element_ = GST_ELEMENT(params->m_element);
+  HM_RETURN_IF_ERROR(Super::PreCapsInit(params));
+  if (scoreboard_camera_config_ && scoreboard_camera_config_->decoder.live && show_scoreboard_)
+    HM_RETURN_IF_ERROR(StartScoreboardCamera(0));
+  return absl::OkStatus();
 };
 
 absl::Status PlayCropperPriv::PostCapsInit(DSCustom_CreateParams* params) {
@@ -318,6 +322,8 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     return true;
   }
   if (prop.key == "scoreboard-reselect") {
+    if (scoreboard_camera_enabled_.load(std::memory_order_acquire))
+      return false;
     if (prop.value != "1")
       return false;
     if (!scoreboard_selection_active_.load(std::memory_order_acquire))
@@ -327,13 +333,24 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   // The selector runs with mu_process_ held. Cancellation must not wait for it.
   if (prop.key == "cancel-pending-work") {
     scoreboard_selection_cancelled_.store(true, std::memory_order_release);
+    CancelScoreboardCamera();
     return true;
   }
   absl::WriterMutexLock lk(&mu_process_);
   // std::cerr << "SetProperty(" << prop.key << "=" << prop.value << ")" << std::endl;
   std::string key = prop.key;
   std::replace(key.begin(), key.end(), '_', '-');
-  if (key == "show") {
+  if (key == "scoreboard-camera") {
+    const auto status = ConfigureScoreboardCamera(prop.value);
+    if (!status.ok())
+      g_printerr("Scoreboard camera configuration failed: %s\n", status.ToString().c_str());
+    return status.ok();
+  } else if (key == "scoreboard-camera-timeline") {
+    const auto status = SetScoreboardCameraTimeline(prop.value);
+    if (!status.ok())
+      g_printerr("Scoreboard camera timeline failed: %s\n", status.ToString().c_str());
+    return status.ok();
+  } else if (key == "show") {
     show_ = !!std::atol(prop.value.c_str());
   } else if (key == "render-scale") {
     render_scale_ = std::atof(prop.value.c_str());
@@ -352,9 +369,11 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   } else if (key == "scoreboard-projected-width") {
     scoreboard_projected_width_ = prop.value;
     scoreboard_.reset();
+    scoreboard_camera_plan_.reset();
   } else if (key == "scoreboard-projected-height") {
     scoreboard_projected_height_ = prop.value;
     scoreboard_.reset();
+    scoreboard_camera_plan_.reset();
   } else if (key == "scoreboard-flip-horizontal" || key == "scoreboard-flip-vertical") {
     if (prop.value != "0" && prop.value != "1")
       return false;
@@ -363,6 +382,7 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     else
       scoreboard_flip_.vertical = prop.value == "1";
     scoreboard_.reset();
+    scoreboard_camera_plan_.reset();
   } else if (key == "scoreboard-scale") {
     double scale = 0;
     std::istringstream input(prop.value);
@@ -370,6 +390,7 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
       return false;
     scoreboard_scale_ = scale;
     scoreboard_.reset();
+    scoreboard_camera_plan_.reset();
   } else if (key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
   } else if (key == "plot-player-tracking") {
@@ -463,6 +484,7 @@ bool PlayCropperPriv::SetScoreboardPerspectiveValue(std::string_view value) {
   }
   scoreboard_perspective_polygion_ = std::move(parsed_polygon);
   scoreboard_.reset();
+  scoreboard_camera_plan_.reset();
   scoreboard_disabled_ = std::all_of(
       scoreboard_perspective_polygion_.begin(), scoreboard_perspective_polygion_.end(), [](const cv::Point2f& point) {
         return point.x == 0.0f && point.y == 0.0f;
@@ -576,8 +598,18 @@ PlayCropperPriv::~PlayCropperPriv() {
 }
 
 void PlayCropperPriv::Shutdown() {
+  scoreboard_camera_stopping_.store(true, std::memory_order_release);
+  CancelScoreboardCamera();
   Super::Shutdown();
   absl::WriterMutexLock lk(&mu_process_);
+  cudaSetDevice(m_gpuId);
+  if (cuda_stream_)
+    cudaStreamSynchronize(cuda_stream_);
+  scoreboard_camera_images_.clear();
+  {
+    std::lock_guard<std::mutex> lock(scoreboard_camera_mutex_);
+    scoreboard_camera_session_.reset();
+  }
   if (!player_overlay_compositor_)
     return;
   // GenerateOutput fences successful and failed submissions; retain explicit
@@ -606,6 +638,8 @@ absl::Status PlayCropperPriv::GenerateOutput(
     NvBufSurface* in_surface,
     NvBufSurface* out_surface) {
   absl::WriterMutexLock lk(&mu_process_);
+
+  scoreboard_camera_images_.clear(); // Previous GenerateOutput completed its GPU fence.
 
   // Setup and initialization
   if (!in_surface->numFilled) {
@@ -785,7 +819,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     }
 
     // Scoreboard
-    if (scoreboard_reselect_requested_.exchange(false, std::memory_order_acq_rel))
+    if (scoreboard_reselect_requested_.exchange(false, std::memory_order_acq_rel) && !scoreboard_camera_config_)
       HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(incoming_surface, frame_meta, true));
     if (show_scoreboard_) {
       completion_fence.MarkSubmitted();
@@ -965,6 +999,7 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
     if (scoreboard_disabled_)
       scoreboard_perspective_polygion_.clear();
     scoreboard_.reset();
+    scoreboard_camera_plan_.reset();
     std::cout << (scoreboard_disabled_ ? "Scoreboard overlay disabled by config reload"
                                        : "Loaded scoreboard perspective polygon from config reload")
               << std::endl;
@@ -1186,6 +1221,8 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     surface::Surface out_surface,
     const NvDsFrameMeta* frame_meta,
     cudaStream_t stream) {
+  if (scoreboard_camera_config_)
+    return RenderScoreboardCamera(out_surface, frame_meta, stream);
   if (scoreboard_perspective_polygion_.empty()) {
     HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(in_surface, frame_meta));
   }
@@ -1233,6 +1270,7 @@ absl::Status PlayCropperPriv::RenderScoreboard(
           scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height, true, nullptr, scoreboard_flip_);
       if (size_t(scoreboard_->getWidth()) > out_surface.width() || size_t(scoreboard_->getHeight()) > out_surface.height()) {
         scoreboard_.reset();
+        scoreboard_camera_plan_.reset();
         return absl::InvalidArgumentError("Aspect-adjusted scoreboard must fit within the output");
       }
     } catch (const std::exception& e) {

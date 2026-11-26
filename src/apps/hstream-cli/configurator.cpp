@@ -6577,6 +6577,26 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   if (!pipeline["hmplaycropper"].IsDefined()) {
     return absl::OkStatus();
   }
+  const auto camera = get_node(config_, "rink.scoreboard.camera");
+  if (!camera || !camera->IsMap() || !(*camera)["enabled"].IsScalar())
+    return absl::InvalidArgumentError("Effective baseline is missing rink.scoreboard.camera.enabled");
+  auto private_properties = pipeline["hmplaycropper"]["private-properties"];
+  if ((*camera)["enabled"].as<bool>()) {
+    YAML::Node prepared;
+    prepared["camera"] = YAML::Clone(*camera);
+    prepared["resize_filter"] = config_["rink"]["scoreboard"]["resize_filter"];
+    prepared["sharpen_amount"] = config_["rink"]["scoreboard"]["sharpen_amount"];
+    prepared["game_directory"] = resolved_game_dir().string();
+    const auto serialized = YAML::Dump(prepared);
+    auto* encoded = g_base64_encode(reinterpret_cast<const guchar*>(serialized.data()), serialized.size());
+    std::string property(encoded);
+    while (!property.empty() && property.back() == '=')
+      property.pop_back();
+    pipeline["hmplaycropper"]["private-properties"]["scoreboard-camera"] = property;
+    g_free(encoded);
+  } else if (private_properties.IsMap()) {
+    private_properties.remove("scoreboard-camera");
+  }
   const auto map_playcropper_scalar = [&](const std::string& dest_key, const std::string& src_key) -> absl::Status {
     std::optional<YAML::Node> src_node = get_node(config_, src_key);
     if (!src_node || !src_node->IsDefined())
@@ -6779,7 +6799,7 @@ absl::Status Configurator::gather_stitching_videos(
       source_starts,
       stitching::ReadCameraSourceStarts(get_node(config_, "stitching.input_start_times").value_or(YAML::Node())));
   stitching::VideosDict videos;
-  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   if (configurator_internal::refresh_generated_camera_roles(config_, explicit_selection, videos)) {
@@ -7085,7 +7105,7 @@ absl::Status Configurator::set_output_dimensions(
     // If we don't have left/right files, we may still know dimensions from a stitched output
     if (ww == 0 || hh == 0) {
       stitching::VideosDict videos;
-      HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+      HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
       if (videos.count("stitched")) {
         const auto& stitched_chapters = videos.at("stitched");
         bool all_exist = true;
@@ -9538,7 +9558,7 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
 
 absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_dir) const {
   stitching::VideosDict videos;
-  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
   if (videos.empty()) {
     return false;
   }
@@ -10256,6 +10276,41 @@ absl::Status Configurator::prepare_initial_pipeline_position(
     NvDsPipeline& pipeline,
     const NvDsConfig& config,
     uint64_t start_time_ns) {
+  const auto camera = get_node(config_, "rink.scoreboard.camera");
+  if (camera && camera->IsMap() && (*camera)["enabled"].as<bool>()) {
+    const bool camera_live = !(*camera)["uri"].IsNull();
+    if (camera_live != static_cast<bool>(pipeline.multi_src_bin.live_source))
+      return absl::InvalidArgumentError(
+          "Scoreboard source must be recorded for recorded games and live for live games");
+    if (camera_live) {
+      auto* clock = gst_system_clock_obtain();
+      gst_pipeline_use_clock(GST_PIPELINE(pipeline.pipeline), clock);
+      gst_object_unref(clock);
+    } else if (auto* cropper = pipeline.common_elements.hmplaycropper_bin.playcropper) {
+      const auto& source = config.multi_source_config[0];
+      if (source.camera_fps_n <= 0 || source.camera_fps_d <= 0)
+        return absl::FailedPreconditionError("Recorded scoreboard requires the game's rational output clock");
+      const auto frame =
+          gst_util_uint64_scale_ceil(start_time_ns, source.camera_fps_n, uint64_t(source.camera_fps_d) * GST_SECOND);
+      const auto timeline =
+          std::to_string(frame) + "," + std::to_string(source.camera_fps_n) + "," + std::to_string(source.camera_fps_d);
+      GstState state = GST_STATE_NULL;
+      gst_element_get_state(cropper, &state, nullptr, 0);
+      if (state == GST_STATE_NULL) {
+        gchar* properties = nullptr;
+        g_object_get(cropper, "plugin-private-config", &properties, nullptr);
+        const auto value = std::string(properties ? properties : "") + ";scoreboard-camera-timeline=" + timeline;
+        g_free(properties);
+        g_object_set(cropper, "plugin-private-config", value.c_str(), nullptr);
+      } else {
+        auto* event = gst_event_new_custom(
+            GST_EVENT_CUSTOM_DOWNSTREAM_OOB,
+            gst_structure_new("hstream-scoreboard-timeline", "value", G_TYPE_STRING, timeline.c_str(), nullptr));
+        if (!gst_element_send_event(cropper, event))
+          return absl::FailedPreconditionError("Cannot restore scoreboard camera after game seek");
+      }
+    }
+  }
   const bool needs_position =
       start_time_ns || config.hmsticher_config.left_frame_offset_ns || config.hmsticher_config.right_frame_offset_ns;
   if (!needs_position) {

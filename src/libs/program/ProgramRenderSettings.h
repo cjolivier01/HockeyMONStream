@@ -2,6 +2,7 @@
 
 #include <optional>
 #include "hstream/src/libs/draw_display/RinkMiniMap.h"
+#include "hstream/src/libs/gpu/Image.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlan.h"
 
 namespace hm::program {
@@ -14,5 +15,6 @@ struct ProgramRenderSettings {
   float exposure;
   std::optional<scoreboard::Plan> scoreboard;
   std::shared_ptr<const draw_display::RinkMapFrame> rink_map;
+  std::shared_ptr<const gpu::Image> scoreboard_source;
 };
 } // namespace hm::program

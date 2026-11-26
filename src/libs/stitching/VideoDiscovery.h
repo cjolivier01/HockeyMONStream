@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "absl/status/statusor.h"
+#include "yaml-cpp/yaml.h"
 
 namespace hm::stitching {
 
@@ -25,6 +26,10 @@ bool IsStandaloneCameraFile(const std::string& filename);
 absl::Status ValidateCameraChapters(const std::map<std::string, std::vector<std::string>>& cameras);
 absl::Status ValidateDiscoveredCameraChapters(const VideosDict& cameras);
 
-absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, bool prune = false);
+// Scoreboard-only recordings are excluded from automatic game-camera discovery.
+// Supply the effective configuration for unsaved/CLI overrides. Otherwise the
+// persisted baseline, user snapshot and game configuration own the roles.
+absl::StatusOr<VideosDict> get_available_videos(
+    const std::string& dir_name, bool prune = false, const YAML::Node* effective_config = nullptr);
 
 } // namespace hm::stitching

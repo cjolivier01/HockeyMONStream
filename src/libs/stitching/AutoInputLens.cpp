@@ -174,7 +174,7 @@ static AutoInputLensResult read_auto_input_lens_for_game(
     if (!left.empty() && !right.empty()) {
       return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
     }
-    auto discovered = get_available_videos(game.string());
+    auto discovered = get_available_videos(game.string(), false, &config);
     if (!discovered.ok()) {
       if (!left.empty() || !right.empty())
         return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);

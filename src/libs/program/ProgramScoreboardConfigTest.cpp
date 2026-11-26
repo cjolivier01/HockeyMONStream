@@ -151,6 +151,21 @@ int main(int argc, char** argv) {
         result.ok() && result->has_value() &&
             !hm::program::PrepareProgramScoreboard(**result, "saved", 1000, 1000, 3840, 2160).ok(),
         "Self-intersecting polygon accepted");
+    auto independent = YAML::Clone(game);
+    independent["rink"].remove("stitched_output_generation");
+    independent["rink"]["scoreboard"]["camera"]["enabled"] = true;
+    independent["rink"]["scoreboard"]["camera"]["source_dimensions"] = YAML::Load("[384,192]");
+    independent["rink"]["scoreboard"]["camera"]["polygon"] = YAML::Load("[[96,40],[223,40],[223,103],[96,103]]");
+    result = resolve({}, independent);
+    Check(
+        result.ok() && result->has_value() && (*result)->camera_region.has_value(),
+        "Independent scoreboard incorrectly requires panorama generation/polygon");
+    plan = hm::program::PrepareProgramScoreboard(**result, "unrelated-panorama", 1000, 1000, 3840, 2160);
+    Check(
+        plan.ok() && plan->source_width == 128 && plan->source_height == 64,
+        "Independent scoreboard plan sampled panorama coordinates");
+    independent["rink"]["scoreboard"]["camera"]["polygon"] = YAML::Load("[[0,0],[0,0],[0,0],[0,0]]");
+    Check(!resolve({}, independent).ok(), "Degenerate camera crop silently disabled required overlay");
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

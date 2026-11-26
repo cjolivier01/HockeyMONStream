@@ -7,6 +7,7 @@ cc_library(
     name = "playcropper",
     srcs = [
       "playcropper.cpp",
+      "ScoreboardCamera.cpp",
     ],
     hdrs = [
       "playcropper.h",
@@ -30,6 +31,8 @@ cc_library(
         "//src/libs/stitching",
         "@hm-cupano//src/pano:cuda_matrix",
         "@yaml-cpp",
+        "//src/libs/scoreboard:camera_config",
+        "//src/libs/program:gpu",
     ]),
 )
 
@@ -172,4 +175,32 @@ cc_binary(
         "//toolchains/jetson:cuda_runtime",
     ]),
     linkopts = ["-lnvdsbufferpool"],
+)
+
+cc_test(
+    name = "scoreboard_camera_test",
+    srcs = ["ScoreboardCameraTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    linkopts = ["-lnvdsbufferpool"],
+    tags = [
+        "manual",
+        "requires-gpu",
+    ],
+    deps = cuda_dependencies(
+        "scoreboard_camera_test",
+        [
+            ":playcropper",
+            "//src/gst-plugins/gst-videoprep/stitcher",
+            "//src/libs/program:gpu",
+            "//src/libs/media:test_mp4",
+            "//src/libs/media:mp4_video_track",
+            "@deepstream//:deepstream_lib",
+            "@gstreamer",
+            "@local_cuda//:nppc",
+            "@local_cuda//:nppig",
+            "@local_cuda//:nppif",
+        ],
+        testonly = True,
+    ),
 )

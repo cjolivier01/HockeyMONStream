@@ -75,7 +75,7 @@ int main() {
       std::ofstream(file).put('x');
     }
     const auto discovered = hm::stitching::get_available_videos(directory);
-    Check(discovered.ok(), "Cannot discover camera directories");
+    Check(discovered.ok(), "Cannot discover camera directories: " + discovered.status().ToString());
     Check(
         !hm::stitching::ValidateDiscoveredCameraChapters(*discovered).ok(),
         "Renumbered Auto maps must retain filename gap detection");
@@ -133,6 +133,27 @@ int main() {
     std::ofstream(outputs_root / "one.mp4").put('x');
     auto outputs = hm::stitching::get_available_videos(outputs_root.string());
     Check(outputs.ok() && outputs->empty(), "Arbitrary root outputs must not become camera inputs");
+    const auto auxiliary_root = root / "auxiliary";
+    for (int camera = 1; camera <= 3; ++camera) {
+      const auto directory = auxiliary_root / ("cam" + std::to_string(camera));
+      std::filesystem::create_directories(directory);
+      std::ofstream(directory / "clip.mp4").put('x');
+    }
+    std::filesystem::create_directories(auxiliary_root / "_hockeymon");
+    const auto settings = auxiliary_root / "_hockeymon/config.yaml";
+    std::ofstream(settings) << "rink: {scoreboard: {camera: {enabled: true, files: [cam3/clip.mp4]}}}\n";
+    auto auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+          "Scoreboard-only camera entered automatic stitching discovery");
+    auto override = YAML::Load("rink: {scoreboard: {camera: {enabled: false}}}");
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(auxiliary.ok() && auxiliary->size() == 3,
+          "Explicit disabled camera override did not restore ordinary discovery");
+    override = YAML::Load("rink: {scoreboard: {camera: {enabled: true, files: []}}}");
+    override["rink"]["scoreboard"]["camera"]["files"].push_back((auxiliary_root / "cam2/../cam3/clip.mp4").string());
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+          "Equivalent absolute scoreboard path entered stitching discovery");
     std::filesystem::remove_all(root);
     std::cout << "Camera chapter validation passed\n";
     return 0;

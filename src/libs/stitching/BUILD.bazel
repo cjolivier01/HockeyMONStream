@@ -1117,6 +1117,10 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:baseline_config",
+    "//src/libs/common:config_layers",
+    "//src/libs/common:user_config",
+    "@yaml-cpp",
     "//src/libs/common:status_macros",
     "//src/libs/common:utils_base",
     "@com_google_absl//absl/status:status",

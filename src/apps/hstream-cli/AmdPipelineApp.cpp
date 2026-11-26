@@ -41,6 +41,7 @@
 #include "hstream/src/libs/program/ProgramScoreboardConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/scoreboard/CameraConfig.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 
 namespace {
@@ -286,6 +287,17 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const auto device = hipDeviceGetPCIBusId(pci, sizeof(pci), launch.amd.gpu_id);
   Require(device == hipSuccess, std::string("Cannot select AMD GPU: ") + hipGetErrorString(device));
   const auto render_node = std::filesystem::path(std::string("/dev/dri/by-path/pci-") + pci + "-render");
+  auto scoreboard_camera_config = Take(
+      hm::scoreboard::ResolveCameraConfig(
+          launch.configuration.values["rink"]["scoreboard"]["camera"],
+          launch.game,
+          hm::scoreboard::CameraDecodeBackend::kVa,
+          launch.amd.gpu_id,
+          render_node));
+  if (scoreboard_camera_config && scoreboard_camera_config->decoder.live)
+    throw Failure(absl::InvalidArgumentError("Recorded game sources require a recorded scoreboard camera"));
+  std::unique_ptr<hm::scoreboard::CameraSession> scoreboard_camera;
+  uint64_t scoreboard_epoch = 0;
   auto source = Take(hm::gpu::VaStereoVideo::Create(
       {{Reader(launch, 0, render_node), Reader(launch, 1, render_node)}, launch.chapters, launch.frame_offsets}, {}));
   std::array<double, 2> trim_seconds{};
@@ -580,6 +592,10 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
                   encoding ? "local-render-required" : "position-out-of-range");
               return absl::OkStatus();
             }
+            if (scoreboard_camera) {
+              scoreboard_camera->Cancel();
+              scoreboard_camera.reset();
+            }
             pair.reset();
             Status(source->Seek(start + position));
             pair = Take(source->Read());
@@ -663,10 +679,28 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
                                 pair->time, pair->duration));
     if (overlay_state.selection().players || output_rink_map)
       preview_boxes.Update(pair->time, completed.observation.tracks);
+    std::shared_ptr<const hm::gpu::Image> scoreboard_image;
+    const bool scoreboard_delayed = scoreboard_camera_config && scoreboard_camera_config->offset_ns > 0 &&
+        pair->time < uint64_t(scoreboard_camera_config->offset_ns);
+    if (scoreboard_camera_config && !scoreboard_delayed &&
+        std::any_of(render_settings.begin(), render_settings.end(), [](const auto& output) {
+          return output.second.scoreboard.has_value();
+        })) {
+      if (!scoreboard_camera) {
+        scoreboard_camera_config->epoch = ++scoreboard_epoch;
+        scoreboard_camera_config->game_start_ns = pair->time;
+        scoreboard_camera = Take(hm::scoreboard::CameraSession::Start(*scoreboard_camera_config));
+      }
+      scoreboard_image = Take(scoreboard_camera->Select(pair->time, [] { return DrainRequested(); }));
+    }
     for (size_t index = 0; index < outputs.size(); ++index) {
       const auto& output = outputs[index];
       std::unique_ptr<GstBuffer, decltype(&gst_buffer_unref)> buffer(Take(output->Acquire()), gst_buffer_unref);
       auto settings = render_settings[index].second;
+      if (scoreboard_delayed)
+        settings.scoreboard.reset();
+      if (settings.scoreboard)
+        settings.scoreboard_source = scoreboard_image;
       if (output_rink_map && encoded_outputs[index])
         settings.rink_map = std::make_shared<const hm::draw_display::RinkMapFrame>(preview_boxes.RinkFrame(
             processor->generation(), processor->width(), processor->height(), pair->time, pair->sequence));

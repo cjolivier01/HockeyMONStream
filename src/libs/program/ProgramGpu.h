@@ -70,6 +70,8 @@ cudaError_t RenderProgram(
 // An optional scoreboard samples the original panorama after Program tone/crop,
 // without a video readback or an intermediate image. Its plan must match both
 // source and output dimensions. Source video alpha does not hide the scoreboard.
+// scoreboard_source optionally supplies an independent GPU camera image; its
+// lifetime extends through stream completion. Without it, sample the panorama.
 cudaError_t RenderProgramYuv(
     const gpu::Image& input,
     const YuvOutput& output,
@@ -78,5 +80,16 @@ cudaError_t RenderProgramYuv(
     bool lift_shadow_black_point,
     float exposure,
     cudaStream_t stream,
-    const scoreboard::Plan* scoreboard = nullptr);
+    const scoreboard::Plan* scoreboard = nullptr,
+    const gpu::Image* scoreboard_source = nullptr);
+
+// Composite only the scoreboard rectangle into an existing RGBA8 output.
+// Source may be a separate camera or a compact GPU crop. Pixels outside the
+// rectangle and output row padding are untouched; source alpha is ignored.
+// Both images must remain alive through stream completion and not overlap.
+cudaError_t CompositeScoreboard(
+    const gpu::Image& source,
+    const PackedOutput& output,
+    const scoreboard::Plan& plan,
+    cudaStream_t stream);
 } // namespace hm::playcropper

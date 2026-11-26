@@ -1190,6 +1190,9 @@ def generate(root, *, native_revision=None, include_revision=True):
     sources = [
         "configs/baseline.yaml",
         "src/libs/common/RuntimeControlConfig.h",
+        "src/apps/hstream-ui/ScoreboardCameraDialog.cpp",
+        "src/libs/scoreboard/CameraConfig.cpp",
+        "src/libs/stitching/VideoDiscovery.cpp",
         "src/libs/common/GameStorage.h",
         "src/libs/common/GameStorage.cpp",
         "src/apps/hstream-ui/CameraControlSpecs.h",
@@ -1287,6 +1290,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "rotation_controls": rotations,
         "calibration_stages": calibration_stages(root),
         "highlight_defaults": {"base_name": highlight_base_name},
+        "scoreboard_camera_defaults": baseline["rink"]["scoreboard"]["camera"],
         "stitching_experiments": baseline["hstream_ui"]["stitching_experiments"],
         "workflow_defaults": {
             key: baseline["workflow"][key]

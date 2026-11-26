@@ -3,13 +3,18 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <regex>
+#include <set>
 #include <vector>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/StatusMacros.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/utils.h"
 
 namespace hm::stitching {
@@ -424,7 +429,7 @@ absl::Status ValidateDiscoveredCameraChapters(const VideosDict& cameras) {
  * @param prune If true, prunes videos that don't have matching chapters.
  * @return The videos dictionary.
  */
-absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, bool prune) {
+static absl::StatusOr<VideosDict> discover_videos(const std::string& dir_name, bool prune) {
   if (!fs::is_directory(dir_name)) {
     return absl::InvalidArgumentError(
         TO_STRING("Directory \"" << dir_name << "\" doesn't exist or is not a directory"));
@@ -518,6 +523,60 @@ absl::StatusOr<VideosDict> get_available_videos(const std::string& dir_name, boo
   }
 
   return videos_dict;
+}
+
+absl::StatusOr<VideosDict> get_available_videos(
+    const std::string& directory,
+    bool prune,
+    const YAML::Node* effective_config) {
+  VideosDict videos;
+  HM_ASSIGN_OR_RETURN(videos, discover_videos(directory, prune));
+  try {
+    const auto baseline = baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    YAML::Node owned = YAML::Clone(baseline->values);
+    if (!effective_config) {
+      // Library callers without a user home have no personal overlay. An
+      // explicitly pinned workflow snapshot remains authoritative without HOME.
+      if (std::getenv("HOME") || std::getenv("HSTREAM_USER_CONFIG_SNAPSHOT")) {
+        const auto user = user_config::load_snapshot();
+        if (!user.ok())
+          return user.status();
+        owned = config::MergeNodes(owned, user->values, false);
+      }
+      const auto path = fs::path(directory) / "_hockeymon/config.yaml";
+      if (fs::exists(path))
+        owned = config::MergeNodes(owned, YAML::LoadFile(path.string()), false);
+    } else
+      owned = config::MergeNodes(owned, *effective_config, false);
+    const auto camera = owned["rink"]["scoreboard"]["camera"];
+    if (!camera["enabled"].as<bool>())
+      return videos;
+    std::set<fs::path> excluded;
+    for (const auto& file : camera["files"]) {
+      auto path = fs::path(file.as<std::string>());
+      if (path.is_relative())
+        path = fs::path(directory) / path;
+      excluded.insert(fs::weakly_canonical(path));
+    }
+    for (auto group = videos.begin(); group != videos.end();) {
+      auto& chapters = group->second;
+      for (auto chapter = chapters.begin(); chapter != chapters.end();) {
+        if (excluded.count(fs::weakly_canonical(chapter->second)))
+          chapter = chapters.erase(chapter);
+        else
+          ++chapter;
+      }
+      if (chapters.empty())
+        group = videos.erase(group);
+      else
+        ++group;
+    }
+    return videos;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Cannot resolve scoreboard-only camera recordings: ") + error.what());
+  }
 }
 
 } // namespace hm::stitching

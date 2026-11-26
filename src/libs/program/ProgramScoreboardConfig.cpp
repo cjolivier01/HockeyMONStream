@@ -87,7 +87,11 @@ absl::StatusOr<std::optional<ProgramScoreboardConfig>> ResolveProgramScoreboardC
       return std::nullopt;
     if (output_width < 2 || output_height < 2)
       return absl::InvalidArgumentError("Scoreboard requires positive output dimensions");
-    const auto polygon = CropSetting(config, "rink.scoreboard.perspective_polygon", "scoreboard-perspective-polygon");
+    const auto camera = get_node(config.values, "rink.scoreboard.camera");
+    const bool independent = camera && (*camera)["enabled"].as<bool>();
+    const auto polygon = independent
+        ? (*camera)["polygon"]
+        : CropSetting(config, "rink.scoreboard.perspective_polygon", "scoreboard-perspective-polygon");
     if (polygon.IsNull())
       return absl::FailedPreconditionError("AMD scoreboard requires a saved polygon; select it before playback");
     ProgramScoreboardConfig result;
@@ -118,12 +122,22 @@ absl::StatusOr<std::optional<ProgramScoreboardConfig>> ResolveProgramScoreboardC
           return absl::InvalidArgumentError("Scoreboard polygon must be finite");
         disabled = disabled && number == 0;
       }
-    if (disabled)
+    if (independent) {
+      const auto dimensions = (*camera)["source_dimensions"];
+      if (!dimensions.IsSequence() || dimensions.size() != 2)
+        return absl::InvalidArgumentError("Scoreboard camera needs its source dimensions");
+      auto region = scoreboard::MakeCameraRegion(result.polygon, dimensions[0].as<int>(), dimensions[1].as<int>(), 2);
+      if (!region.ok())
+        return region.status();
+      result.camera_region = *region;
+      result.polygon = region->polygon;
+    } else if (disabled)
       return std::nullopt;
     const auto generation = get_node(config.values, "rink.stitched_output_generation");
-    if (!generation || !generation->IsScalar() || generation->Scalar().empty())
+    if (!independent && (!generation || !generation->IsScalar() || generation->Scalar().empty()))
       return absl::FailedPreconditionError("Scoreboard requires a saved output-generation identity");
-    result.generation = generation->Scalar();
+    if (!independent)
+      result.generation = generation->Scalar();
     const double scale =
         Number(BaselineOnNull(
                    config,
@@ -176,8 +190,12 @@ absl::StatusOr<scoreboard::Plan> PrepareProgramScoreboard(
     int source_height,
     int output_width,
     int output_height) {
-  if (generation.empty() || generation != config.generation)
+  if (!config.camera_region && (generation.empty() || generation != config.generation))
     return absl::FailedPreconditionError("Scoreboard polygon belongs to a different output generation");
+  if (config.camera_region) {
+    source_width = config.camera_region->width;
+    source_height = config.camera_region->height;
+  }
   return scoreboard::MakePlan(
       config.polygon,
       source_width,

@@ -79,6 +79,11 @@ struct ConfiguratorTestAccess {
     configurator->explicit_value_ranks_.clear();
   }
 
+  static absl::Status apply_scoreboard(Configurator* configurator) {
+    auto pipeline = configurator->config_["pipeline"];
+    return configurator->apply_scoreboard_perspective(pipeline);
+  }
+
   static absl::Status import_stitching_orientation(Configurator* configurator, const std::filesystem::path& game_dir) {
     return configurator->import_stitching_orientation(game_dir);
   }
@@ -1727,6 +1732,35 @@ int main() {
           mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
+
+  {
+    auto config = YAML::Clone(mapping_canonical.config());
+    const auto original_sources = YAML::Dump(config["game"]["videos"]);
+    auto camera = config["rink"]["scoreboard"]["camera"];
+    camera["enabled"] = true;
+    camera["files"].push_back("scoreboard-only.mp4");
+    camera["start_offset"] = "-00:00:05.1234";
+    hm::ConfiguratorTestAccess::set_config(&mapping_canonical, config);
+    const auto status = hm::ConfiguratorTestAccess::apply_scoreboard(&mapping_canonical);
+    auto properties = mapping_canonical.config()["pipeline"]["hmplaycropper"]["private-properties"];
+    gsize size = 0;
+    auto* bytes = g_base64_decode(properties["scoreboard-camera"].as<std::string>().c_str(), &size);
+    const auto decoded = YAML::Load(std::string(reinterpret_cast<char*>(bytes), size));
+    g_free(bytes);
+    ok &= expect(
+        status.ok() && decoded["camera"]["files"][0].as<std::string>() == "scoreboard-only.mp4" &&
+            decoded["camera"]["start_offset"].as<std::string>() == "-00:00:05.1234" &&
+            YAML::Dump(mapping_canonical.config()["game"]["videos"]) == original_sources,
+        "Independent scoreboard materialization must preserve exact offsets without adding stitching inputs");
+    config = YAML::Clone(mapping_canonical.config());
+    config["rink"]["scoreboard"]["camera"]["enabled"] = false;
+    hm::ConfiguratorTestAccess::set_config(&mapping_canonical, config);
+    ok &= expect(
+        hm::ConfiguratorTestAccess::apply_scoreboard(&mapping_canonical).ok() &&
+            !mapping_canonical.config()["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-camera"]
+                 .IsDefined(),
+        "Disabling an independent scoreboard must remove its materialized decoder configuration");
+  }
 
   for (const char* alias : hm::scoreboard::kScalePaths) {
     const fs::path scale_game_dir = games / "mapping-scoreboard-scale";

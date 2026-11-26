@@ -79,3 +79,27 @@ cc_test(
     srcs = ["StereoFramePlanTest.cpp"],
     deps = [":stereo_frame_plan"],
 )
+
+cc_library(
+    name = "video_still",
+    srcs = ["VideoStill.cpp"],
+    hdrs = ["VideoStill.h"],
+    include_prefix = "hstream/src/libs/media",
+    linkopts = [
+        "-L/usr/local/lib",
+        "-lavformat",
+        "-lavcodec",
+        "-lavutil",
+        "-lswscale",
+    ],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "video_still_test",
+    srcs = ["VideoStillTest.cpp"],
+    deps = [
+        ":test_mp4",
+        ":video_still",
+    ],
+)

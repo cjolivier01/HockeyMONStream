@@ -1535,3 +1535,13 @@ The AMD lifecycle test accepts `review_sigint review_sigterm` as case
 arguments. Use a disposable game with an unreviewed saved mask. Each case
 waits for the editor's ready record, sends the signal, and checks that the
 original mask survives while the review directory and game owner are released.
+
+### Independent scoreboard recording
+
+The optional scoreboard-only camera uses the shared bounded `CameraSession`, VA
+hardware decode, DMABuf/HIP import and compact GPU crop. Program output samples
+that independent image using the same scoreboard placement plan. Recorded seeks
+retire its old session; missing frames fail instead of silently reusing an expired
+image. The shared VA reader has RTSP tests, but the AMD Program runner still has
+its existing recorded-game-only admission. See [scoreboard camera](scoreboard-camera.md)
+for offset semantics, tests and performance limits.
