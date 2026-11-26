@@ -211,8 +211,13 @@ void CheckSession(const std::filesystem::path& path, const CameraDecoderConfig& 
     }
   }
 }
-void CheckFractionalSession(const std::filesystem::path& path, const CameraDecoderConfig& config, bool hevc) {
-  Video(path, hevc, !hevc, 30);
+void CheckFractionalSession(
+    const std::filesystem::path& path,
+    const CameraDecoderConfig& config,
+    bool hevc,
+    bool prepared = false) {
+  if (!prepared)
+    Video(path, hevc, !hevc, 30);
   auto decoder = Take(CameraDecoder::Create(config));
   Status(decoder->OpenFile(path, 0));
   auto images = Take(CameraImages::Create(config.gpu_id, config.region.width, config.region.height, 1));
@@ -389,7 +394,12 @@ int main(int argc, char** argv) {
       std::cerr << "Session" << std::endl;
       CheckSession(path, config);
       std::cerr << "Fractional rate" << std::endl;
-      CheckFractionalSession(directory.path / (hevc ? "hevc-clock.mp4" : "fractional.mp4"), config, hevc);
+      CheckFractionalSession(
+          ((prepared && hevc) ? std::filesystem::path(argv[next + 1]) : directory.path) /
+              (hevc ? "hevc-clock.mp4" : "fractional.mp4"),
+          config,
+          hevc,
+          prepared && hevc);
       if (!hevc) {
         std::cerr << "Live" << std::endl;
         CheckLive(config, path);
