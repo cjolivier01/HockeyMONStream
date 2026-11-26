@@ -78,6 +78,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       libsoup-3.0-dev \
       libssl-dev \
       libswresample-dev \
+      libswscale-dev \
       libsystemd-dev \
       libtiff-dev \
       libudev-dev \

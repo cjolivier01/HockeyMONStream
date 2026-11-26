@@ -697,6 +697,71 @@ expect_equal "${installer_rejection}" \
 # records as 9.1's, which it refuses without a Replaces.  NVIDIA's artifacts
 # declare Conflicts and no Replaces at all, so build the transition copy the
 # installer builds and read the fields back off it.
+# The installer is a production script, so its helpers run in a subshell the
+# way the dependency reader above is run.
+installer_call() {
+  HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1090
+    source "$1"
+    shift
+    "$@"
+  ' _ "${SCRIPT_DIR}/install_deb.sh" "$@"
+}
+
+# Which installed releases the copy has to name.  dpkg's current status is
+# what says a release still owns files: a held one and one an interrupted
+# apt already marked for removal both do.
+superseded_with() { installer_call superseded_deepstream_packages "$1"; }
+# Checked assignments: an empty expectation would otherwise be satisfied by
+# the filter failing outright.
+# The expectation is the name count followed by the names, because the
+# production caller reads this output into an array: one blank name would be
+# an element there and would start a transition, but a plain command
+# substitution strips it to the empty string that means no names at all.
+expect_superseded() {
+  local inventory="$1" expected="$2" label="$3"
+  local -a found=()
+  local name summary
+  # %b: the fixtures carry dpkg's tab separator as an escape.
+  while IFS= read -r name; do
+    found+=("${name}")
+  done < <(printf '%b' "${inventory}" | superseded_with deepstream-9.2)
+  summary="${#found[@]}"
+  if [[ "${#found[@]}" -gt 0 ]]; then summary+=" ${found[*]}"; fi
+  expect_equal "${summary}" "${expected}" "${label}"
+}
+expect_superseded 'deepstream-9.1:amd64\tii
+deepstream-9.2:amd64\tii
+' '1 deepstream-9.1' "the release being installed is not superseded by itself"
+expect_superseded 'deepstream-9.1:amd64\thi
+' '1 deepstream-9.1' "a held release still owns its files"
+expect_superseded 'deepstream-9.1:amd64\tri
+' '1 deepstream-9.1' "a release marked for removal still owns its files until it is gone"
+expect_superseded 'deepstream-8.0:amd64\trc
+deepstream-9.1:amd64\tpn
+' 0 "a release down to config files or gone entirely owns none"
+expect_superseded 'deepstream-9.1:amd64\tiU
+' '1 deepstream-9.1' "a release left unpacked by an interrupted upgrade owns its files"
+expect_superseded 'deepstream-sample-data\tii
+deepstream-binaries-x86\tii
+' 0 "split packages are left to the artifact's own conflicts"
+
+
+installer_call removal_is_expected deepstream-9.1 hmstream deepstream-9.1 \
+  || fail "a removal this installation asked for was not recognized"
+installer_call removal_is_expected deepstream-9.1:arm64 deepstream-9.1 \
+  || fail "APT's architecture-qualified name was not matched to the bare one"
+if installer_call removal_is_expected deepstream-9.10 deepstream-9.1; then
+  fail "a different package was matched by a shared prefix"
+fi
+if installer_call removal_is_expected hmstream-extras hmstream; then
+  fail "a dependent package was accepted as an expected removal"
+fi
+if installer_call removal_is_expected deepstream-9.1; then
+  fail "a removal was accepted with nothing expected at all"
+fi
+
+
 # zstd is what NVIDIA compresses these artifacts with, and the installer runs
 # tar against the executable rather than dpkg-deb's own library.
 if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null ||
@@ -705,6 +770,9 @@ if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null ||
 else
   transition_root="$(mktemp -d)"
   trap 'rm -rf "${transition_root}"' EXIT
+  # dpkg-deb --build refuses a DEBIAN directory it cannot read back, which is
+  # what mkdir gives it under a restrictive umask.
+  umask 022
 
   # $1 is what the artifact declares before the rewrite, written verbatim so a
   # case can hand over a folded field or a trailing blank line; the payload
@@ -724,16 +792,7 @@ else
     dpkg-deb -Zzstd --build --root-owner-group "${root}" "${path}" >/dev/null
   }
 
-  # The installer is a production script, so run it in a subshell the way the
-  # dependency reader above is run.
-  build_transition() {
-    HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
-      # shellcheck disable=SC1090
-      source "$1"
-      shift
-      build_deepstream_transition_deb "$@"
-    ' _ "${SCRIPT_DIR}/install_deb.sh" "$@"
-  }
+  build_transition() { installer_call build_deepstream_transition_deb "$@"; }
 
   # Exactly what deepstream-9.2_9.2.0-1_amd64.deb declares: a Conflicts to
   # extend and no Replaces to extend.
@@ -754,12 +813,19 @@ else
   cmp -s "${transition_root}/unpacked/opt/nvidia/deepstream/payload.bin" \
     "${transition_root}/build/nvidia/opt/nvidia/deepstream/payload.bin" \
     || fail "the transition artifact did not carry its data member through unchanged"
-  # Contents alone would still pass if the member had been recompressed, which
-  # on the real artifact means a gigabyte of work the copy must not do.
-  cmp -s <(ar p "${transition_root}/nvidia.deb" "$(ar t "${transition_root}/nvidia.deb" \
-    | grep '^data[.]tar')") \
-    <(ar p "${transition_root}/nvidia-transition.deb" "$(ar t "${transition_root}/nvidia-transition.deb" \
-    | grep '^data[.]tar')") \
+  # Contents alone would still pass if the member had been re-encoded, which
+  # on the real artifact means a gigabyte of work the copy must not do.  Both
+  # members are extracted to files first: ar p exits 0 for a member it does
+  # not have, and cmp cannot tell two empty streams apart.
+  for payload_source in nvidia nvidia-transition; do
+    ar p "${transition_root}/${payload_source}.deb" \
+      "$(ar t "${transition_root}/${payload_source}.deb" | grep '^data[.]tar')" \
+      >"${transition_root}/${payload_source}.data" \
+      || fail "could not read the data member of ${payload_source}.deb"
+    [[ -s "${transition_root}/${payload_source}.data" ]] \
+      || fail "the data member of ${payload_source}.deb is empty"
+  done
+  cmp -s "${transition_root}/nvidia.data" "${transition_root}/nvidia-transition.data" \
     || fail "the transition artifact re-encoded its data member instead of copying it"
 
   # An existing field is extended rather than replaced, and more than one
@@ -834,6 +900,18 @@ Replaces: deepstream-sample-data' "${transition_root}/both.deb"
   expect_equal "$(dpkg-deb -f "${transition_root}/spaced-transition.deb" Conflicts)" \
     "libglapi-amber, deepstream-9.1" "a space before the colon still names the field"
 
+  # dpkg accepts an empty relationship field when another field follows it.
+  # A comma in front of the list turns it into a list with a hole in it.
+  make_transition_fixture 'Conflicts:
+Section: misc' "${transition_root}/blankfield.deb"
+  build_transition "${transition_root}/blankfield.deb" \
+    "${transition_root}/blankfield-transition.deb" deepstream-9.1 \
+    || fail "the installer could not fill an empty relationship field"
+  expect_equal "$(dpkg-deb -f "${transition_root}/blankfield-transition.deb" Conflicts)" \
+    "deepstream-9.1" "an empty field is filled rather than given a leading comma"
+  expect_equal "$(dpkg-deb -f "${transition_root}/blankfield-transition.deb" Section)" \
+    "misc" "the field after the empty one is left alone"
+
   # dpkg-deb -Znone writes control.tar and data.tar with no suffix after tar.
   make_transition_fixture 'Conflicts: libglapi-amber' "${transition_root}/plain.deb"
   dpkg-deb -Znone --build --root-owner-group "${transition_root}/build/plain" \
@@ -848,10 +926,26 @@ Replaces: deepstream-sample-data' "${transition_root}/both.deb"
   cp "${transition_root}/nvidia.deb" "${transition_root}/payloadless.deb"
   ar d "${transition_root}/payloadless.deb" "$(ar t "${transition_root}/payloadless.deb" \
     | grep '^data[.]tar[.]')"
-  if build_transition "${transition_root}/payloadless.deb" \
-    "${transition_root}/payloadless-transition.deb" deepstream-9.1 >/dev/null 2>&1; then
-    fail "the installer built a transition artifact out of a package with no payload"
+  payloadless_output="$(build_transition "${transition_root}/payloadless.deb" \
+    "${transition_root}/payloadless-transition.deb" deepstream-9.1 2>&1 1>/dev/null)" \
+    && fail "the installer built a transition artifact out of a package with no payload"
+  expect_equal "${payloadless_output}" "ERROR: malformed DeepStream Debian artifact." \
+    "a package with no payload is refused for the reason it is refused"
+  [[ ! -e "${transition_root}/payloadless-transition.deb" ]] \
+    || fail "the refused payloadless transition still left an artifact behind"
+
+  # A source whose payload is shorter than its header promises.  Which layer
+  # refuses it depends on the binutils version; what must hold either way is
+  # that the path the caller hands APT does not become a usable artifact.
+  truncated_source="${transition_root}/truncated.deb"
+  head -c "$(( $(stat -c '%s' "${transition_root}/nvidia.deb") - 16 ))" \
+    "${transition_root}/nvidia.deb" >"${truncated_source}"
+  if build_transition "${truncated_source}" "${transition_root}/truncated-transition.deb" \
+    deepstream-9.1 >/dev/null 2>&1; then
+    fail "the installer built a transition artifact from a truncated package"
   fi
+  [[ ! -e "${transition_root}/truncated-transition.deb" ]] \
+    || fail "a truncated source still produced an artifact at the name APT is given"
 
   # With no release to name, the verification has nothing to look for and
   # would pass an artifact carrying two empty fields.  Assert the diagnostic:
@@ -866,42 +960,38 @@ Replaces: deepstream-sample-data' "${transition_root}/both.deb"
   [[ ! -e "${transition_root}/empty-transition.deb" ]] \
     || fail "the refused transition still left an artifact behind"
 
-  # Which installed releases the copy has to name.  dpkg's current status is
-  # what says a release still owns files: a held one and one an interrupted
-  # apt already marked for removal both do.
-  superseded_with() {
-    HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
-      # shellcheck disable=SC1090
-      source "$1"
-      superseded_deepstream_packages "$2"
-    ' _ "${SCRIPT_DIR}/install_deb.sh" "$1"
-  }
-  # Checked assignments: an empty expectation would otherwise be satisfied by
-  # the filter failing outright.
-  expect_superseded() {
-    local inventory="$1" expected="$2" label="$3" actual
-    # %b: the fixtures carry dpkg's tab separator as an escape.
-    actual="$(printf '%b' "${inventory}" | superseded_with deepstream-9.2)" \
-      || fail "${label}: the filter failed"
-    expect_equal "${actual}" "${expected}" "${label}"
-  }
-  expect_superseded 'deepstream-9.1:amd64\tii
-deepstream-9.2:amd64\tii
-' deepstream-9.1 "the release being installed is not superseded by itself"
-  expect_superseded 'deepstream-9.1:amd64\thi
-' deepstream-9.1 "a held release still owns its files"
-  expect_superseded 'deepstream-9.1:amd64\tri
-' deepstream-9.1 "a release marked for removal still owns its files until it is gone"
-  expect_superseded 'deepstream-8.0:amd64\trc
-deepstream-9.1:amd64\tpn
-' "" "a release down to config files or gone entirely owns none"
-  expect_superseded 'deepstream-sample-data\tii
-deepstream-binaries-x86\tii
-' "" "split packages are left to the artifact's own conflicts"
+  # APT may only remove a package when this installation is the reason.  The
+  # artifact's own Conflicts are part of that reason: a host still carrying
+  # the legacy split packages has them removed by the release it installs,
+  # and their names differ by architecture, so they are read off the artifact
+  # rather than listed here a second time.
+  make_transition_fixture 'Conflicts: libglapi-amber, deepstream-binaries-x86 (<< 9.2), deepstream-sample-data' \
+    "${transition_root}/conflicts.deb"
+  expect_equal "$(installer_call declared_conflicts "${transition_root}/conflicts.deb")" \
+    "libglapi-amber
+deepstream-binaries-x86
+deepstream-sample-data" "the names an artifact declares a conflict with are read off it"
+  expect_equal "$(installer_call declared_conflicts "${transition_root}/bare.deb")" "" \
+    "an artifact declaring no conflict names nothing"
 
   rm -rf "${transition_root}"
   trap - EXIT
 fi
+
+# //src/libs/media:video_still links -lavformat -lavcodec -lavutil -lswscale by
+# hand, so both package builds have to install their headers.  The Jetson list
+# carried none of the four and the build died on libswscale/swscale.h, while
+# the desktop image only had them through a dependency of something else.
+dockerfile="${SCRIPT_DIR}/../env/debian-package/Dockerfile"
+if [[ ! -f "${dockerfile}" ]]; then
+  fail "the desktop package builder Dockerfile is not readable from the test"
+fi
+for ffmpeg_dev in libavcodec-dev libavformat-dev libavutil-dev libswscale-dev; do
+  grep -q -- "${ffmpeg_dev}" "${dockerfile}" \
+    || fail "the desktop package builder does not install ${ffmpeg_dev}"
+  grep -q -- "${ffmpeg_dev}" "${SCRIPT_DIR}/make_deb_jetson.sh" \
+    || fail "the Jetson package build does not install ${ffmpeg_dev}"
+done
 
 for script in deploy.sh make_deb.sh make_deb_jetson.sh; do
   if output="$(JETSON_QT=invalid NODES=stubby bash "${SCRIPT_DIR}/${script}" 2>&1)"; then

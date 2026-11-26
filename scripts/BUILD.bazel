@@ -240,8 +240,10 @@ sh_test(
         "make_deb.sh",
         "make_deb_jetson.sh",
         # Read directly: the test pins install_deb.sh's codename table to
-        # deploy.sh's.
+        # deploy.sh's, and the two package builds' ffmpeg headers to what
+        # //src/libs/media:video_still links.
         "install_deb.sh",
+        "//env/debian-package:Dockerfile",
     ],
 )
 

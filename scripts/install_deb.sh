@@ -569,6 +569,32 @@ read_deepstream_requirement() {
   [[ -n "${DEEPSTREAM_PACKAGE}" && -n "${DEEPSTREAM_MIN_VERSION}" && -n "${DEEPSTREAM_MAX_VERSION}" ]]
 }
 
+# Is APT removing a package this installation is supposed to remove?
+#   removal_is_expected REMOVED EXPECTED...
+# APT names a foreign-architecture package "deepstream-9.1:arm64" and the
+# native one "deepstream-9.1", while the names it is checked against are bare.
+removal_is_expected() {
+  local removed="$1"
+  local expected
+  shift
+  for expected in "$@"; do
+    if [[ "${removed}" == "${expected}" || "${removed}" == "${expected}:"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The package names a Debian artifact declares a conflict with, one per line.
+# NVIDIA's DeepStream artifacts conflict with the legacy split packages, so
+# APT removes whichever of them a host still has.  That is the artifact's own
+# instruction rather than an unexpected dependent, and reading it out of the
+# artifact keeps the architecture-specific name (deepstream-binaries-x86 or
+# -aarch64) out of this script.
+declared_conflicts() {
+  dpkg-deb -f "$1" Conflicts | tr ',' '\n' | awk 'NF { print $1 }'
+}
+
 # Name the installed DeepStream releases a new one is about to take shared
 # paths from, reading dpkg-query '${binary:Package}\t${db:Status-Abbrev}' lines
 # on stdin:
@@ -607,8 +633,8 @@ build_deepstream_transition_deb() {
   local output_deb="$2"
   shift 2
   local -a relationships=("$@")
-  local output_dir control_dir control_member data_member relationship_list
-  local relationship package member member_size metadata
+  local output_dir control_dir control_member data_member relationship_list partial_deb
+  local relationship package member member_size header_end written_size metadata
   local -a control_compression=()
 
   # Without a package to name, the verification below has nothing to look for
@@ -636,6 +662,11 @@ build_deepstream_transition_deb() {
   # extracted control tree with it.
   output_dir="$(dirname "${output_deb}")"
   control_dir="${output_dir}/control"
+  # Assembled under another name and renamed once every check below has
+  # passed, so the path the caller hands APT either does not exist or is a
+  # complete artifact - never the part of one that a failure got to write.
+  partial_deb="${output_deb}.partial"
+  rm -f "${output_deb}" "${partial_deb}"
   # Start empty: a file an earlier failed attempt left behind would otherwise
   # be packed into this artifact's control member.
   rm -rf "${control_dir:?}"
@@ -672,10 +703,16 @@ build_deepstream_transition_deb() {
     in_paragraph {
       paragraph[++paragraph_count] = $0
       if ($0 ~ /^[ \t]/) {
-        if (current != "") { last_line[current] = paragraph_count }
+        if (current != "") {
+          last_line[current] = paragraph_count
+          if ($0 ~ /[^ \t]/) { has_value[current] = 1 }
+        }
       } else {
         current = field_at($0)
-        if (current != "") { last_line[current] = paragraph_count }
+        if (current != "") {
+          last_line[current] = paragraph_count
+          if (substr($0, index($0, ":") + 1) ~ /[^ \t]/) { has_value[current] = 1 }
+        }
       }
       next
     }
@@ -684,7 +721,14 @@ build_deepstream_transition_deb() {
       for (slot = 1; slot <= wanted_count; slot++) {
         name = wanted[slot]
         if (name in last_line) {
-          paragraph[last_line[name]] = paragraph[last_line[name]] ", " list
+          # dpkg accepts an empty relationship field when another one follows
+          # it.  A comma in front of the list would make that field a
+          # relationship list with a hole in it, which dpkg does not accept.
+          if (name in has_value) {
+            paragraph[last_line[name]] = paragraph[last_line[name]] ", " list
+          } else {
+            paragraph[last_line[name]] = paragraph[last_line[name]] " " list
+          }
         } else {
           paragraph[++paragraph_count] = name ": " list
         }
@@ -705,39 +749,42 @@ build_deepstream_transition_deb() {
   # of it at once - ar writes its temporary archive in the working directory,
   # which is not even a path this script chose.  Streaming the data member
   # through keeps one copy, on a filesystem the caller picked.
-  printf '!<arch>\n' >"${output_deb}"
+  printf '!<arch>\n' >"${partial_deb}"
   append_ar_member() {
     local name="$1"
     local size="$2"
-    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${name}/" 0 0 0 100644 "${size}" >>"${output_deb}"
+    printf '%-16s%-12s%-6s%-6s%-8s%-10s`\n' "${name}/" 0 0 0 100644 "${size}" >>"${partial_deb}"
   }
   for member in debian-binary "${control_member}" "${data_member}"; do
     if [[ "${member}" == "${control_member}" ]]; then
       member_size="$(stat -c '%s' "${output_dir}/${control_member}")"
       append_ar_member "${member}" "${member_size}"
-      cat "${output_dir}/${control_member}" >>"${output_deb}"
+      header_end="$(stat -c '%s' "${partial_deb}")"
+      cat "${output_dir}/${control_member}" >>"${partial_deb}"
     else
       member_size="$(ar tv "${source_deb}" | awk -v member="${member}" '$NF == member {print $3; exit}')"
       append_ar_member "${member}" "${member_size}"
-      ar p "${source_deb}" "${member}" >>"${output_deb}"
+      header_end="$(stat -c '%s' "${partial_deb}")"
+      ar p "${source_deb}" "${member}" >>"${partial_deb}"
     fi
-    if (( member_size % 2 != 0 )); then printf '\n' >>"${output_deb}"; fi
+    # The header above promises a length.  Measure what actually landed:
+    # every reader downstream, dpkg-deb --info included, trusts the header
+    # and would hand APT a package dpkg only rejects at unpack, after it has
+    # removed the release being replaced.
+    written_size="$(( $(stat -c '%s' "${partial_deb}") - header_end ))"
+    if [[ "${written_size}" != "${member_size}" ]]; then
+      echo "ERROR: wrote ${written_size} of ${member_size} bytes for ${member} in the DeepStream transition artifact." >&2
+      return 1
+    fi
+    if (( member_size % 2 != 0 )); then printf '\n' >>"${partial_deb}"; fi
   done
   rm -rf "${control_dir:?}" "${output_dir:?}/${control_member}"
 
   # dpkg-deb reads the control member, so this proves the archive it was
-  # written into is one dpkg can walk.  It does not read the payload, so the
-  # header the assembly wrote for it is compared with the source's: a short
-  # write there would reach APT as a package dpkg only rejects at unpack,
-  # after it has already removed the release being replaced.
-  dpkg-deb --info "${output_deb}" >/dev/null
-  if [[ "$(ar tv "${output_deb}" | awk -v member="${data_member}" '$NF == member {print $3; exit}')" \
-        != "$(ar tv "${source_deb}" | awk -v member="${data_member}" '$NF == member {print $3; exit}')" ]]; then
-    echo "ERROR: the DeepStream transition artifact did not carry the whole payload." >&2
-    return 1
-  fi
+  # written into is one dpkg can walk.
+  dpkg-deb --info "${partial_deb}" >/dev/null
   for relationship in Conflicts Replaces; do
-    metadata="$(dpkg-deb -f "${output_deb}" "${relationship}")"
+    metadata="$(dpkg-deb -f "${partial_deb}" "${relationship}")"
     for package in "${relationships[@]}"; do
       if [[ ",${metadata// /}," != *",${package},"* ]]; then
         echo "ERROR: failed to add ${relationship}: ${package} to the DeepStream transition artifact." >&2
@@ -745,6 +792,7 @@ build_deepstream_transition_deb() {
       fi
     done
   done
+  mv -f "${partial_deb}" "${output_deb}"
 }
 
 # Allow the behavior test to source the production implementation without
@@ -1260,18 +1308,17 @@ install_debs+=("${HSTREAM_DEB}")
 
 simulation="$(apt-get install --simulate --no-install-recommends "${install_debs[@]}")"
 printf '%s\n' "${simulation}"
+expected_removals=("${old_deepstream_packages[@]}")
+if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
+  while IFS= read -r conflicting_package; do
+    expected_removals+=("${conflicting_package}")
+  done < <(declared_conflicts "${DEEPSTREAM_DEB}")
+fi
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
   allowed=0
   if [[ "${removed_package}" == hmstream ]]; then allowed=1; fi
-  for package in "${old_deepstream_packages[@]}"; do
-    # APT names a foreign-architecture package "deepstream-9.1:arm64" and the
-    # native one "deepstream-9.1"; the inventory holds the bare name.
-    if [[ "${removed_package}" == "${package}" || "${removed_package}" == "${package}:"* ]]; then
-      allowed=1
-      break
-    fi
-  done
+  if removal_is_expected "${removed_package}" "${expected_removals[@]}"; then allowed=1; fi
   if [[ "${allowed}" -eq 0 ]]; then
     echo "ERROR: this installation would remove dependent package ${removed_package}; refusing." >&2
     exit 1
