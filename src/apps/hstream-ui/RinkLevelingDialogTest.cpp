@@ -304,7 +304,52 @@ int main(int argc, char** argv) {
     dialog.close();
     ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
   }
+  {
+    // A 7680x4320 16-bit still is ~140 MB, so the snapshot revision must accept
+    // what the calibration transaction publishes. The old 128 MiB cap returned
+    // an empty revision, and the dialog opened with no image at all.
+    ok &= expect(
+        hm::stitching::maximum_stitch_artifact_bytes("left.png") >= 7680ULL * 4320 * 6,
+        "the published PNG bound must cover a 16-bit camera-resolution still");
+    const QByteArray original = read(game.filePath("_hockeymon/left.png"));
+    const qint64 oversized = 130LL * 1024 * 1024;
+    ok &= expect(!original.isEmpty(), "the camera still fixture must be readable before it is grown");
+    QFile still(game.filePath("_hockeymon/left.png"));
+    ok &= expect(
+        still.open(QIODevice::ReadWrite) && still.resize(oversized) && (still.close(), true) &&
+            QFileInfo(game.filePath("_hockeymon/left.png")).size() == oversized,
+        "test must be able to grow the camera still past the old cap");
+    ok &= expect(
+        !RinkLevelingDialog::sourceRevision(game.path()).isEmpty(),
+        "a camera still larger than 128 MiB must still produce a snapshot revision");
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    auto* left = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    auto* right = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera1"));
+    ok &= expect(
+        dialog.loadError().isEmpty() && left && right && !left->imageSize().isEmpty() && !right->imageSize().isEmpty(),
+        "an oversized camera still must load into both leveling canvases");
+    dialog.close();
+    ok &= write(game.filePath("_hockeymon/left.png"), original);
+  }
+  {
+    // A config the snapshot hashes must be one the dialog can still read. When
+    // readFile stopped at 1 MiB it returned empty for a config the revision had
+    // accepted, and an empty document satisfies both the recording-geometry
+    // check and the status guard, so a pending calibration opened as complete.
+    const QByteArray padded = config + "hstream_ui:\n  stitching_calibration:\n    status: pending\n# " +
+        QByteArray(2 * 1024 * 1024, 'x') + "\n";
+    ok &= expect(padded.size() > 1024 * 1024, "the padded config must pass readFile's old limit");
+    ok &= write(game.filePath("_hockeymon/config.yaml"), padded);
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    ok &= expect(
+        dialog.loadError().contains("pending or incomplete"),
+        "a pending calibration must be reported even when config.yaml is over 1 MiB");
+    ok &= write(game.filePath("_hockeymon/config.yaml"), config);
+  }
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
+  // Later cases compare against this; an empty revision would match vacuously.
+  ok &= expect(!revision.isEmpty(), "the restored fixture must still produce a snapshot revision");
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();

@@ -1395,8 +1395,7 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
   for (size_t source_index = 0; source_index < sources.size(); ++source_index) {
     NvDsSrcBin* source = sources[source_index];
     if (source != bin && !drain_peer_audio[source_index] && source->src_elem) {
-      // Parent teardown must not raise this permanently ended reader back
-      // to PAUSED and allocate another decoder capture pool.
+      // Keep parent teardown from restarting an already retired decoder.
       gst_element_set_locked_state(source->src_elem, TRUE);
       gst_element_set_state(source->src_elem, GST_STATE_NULL);
     }

@@ -115,9 +115,11 @@ void fixture(
   config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
   std::ofstream(directory / "_hockeymon/config.yaml") << config;
+  // Source stills retain the 64x64 recording geometry; the stitched canvas
+  // below is independently 32x24. A mismatch invalidates calibration first.
   for (const char* name : {"left.png", "right.png"})
     require(
-        cv::imwrite((directory / "_hockeymon" / name).string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(64, 64, 64))),
+        cv::imwrite((directory / "_hockeymon" / name).string(), cv::Mat(64, 64, CV_8UC3, cv::Scalar(64, 64, 64))),
         "source image");
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     std::ofstream(directory / "_hockeymon" / name) << "p f2 w32 h24\n";

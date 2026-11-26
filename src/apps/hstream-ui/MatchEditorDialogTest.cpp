@@ -15,6 +15,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
+#include <QtGui/QImageReader>
 #include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
@@ -101,6 +102,33 @@ int main(int argc, char** argv) {
       frame.matches.push_back(match);
     }
     automatic.frames = {frame, frame};
+    {
+      auto large = automatic;
+      QStringList paths;
+      const bool inspect_real_pair = argc == 4 && QString::fromLocal8Bit(argv[1]) == "--camera-pair";
+      if (inspect_real_pair) {
+        paths = {QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3])};
+      } else {
+        const QString resized = root.filePath("large-camera.png");
+        require(image.scaled(1024, 512).save(resized), "Cannot save the large 16-bit fixture");
+        paths = {resized, resized};
+      }
+      for (int camera = 0; camera < 2; ++camera) {
+        const auto size = QImageReader(paths[camera], "png").size();
+        require(size.isValid(), "Cannot read original camera dimensions");
+        large.frames[0].images[camera] = paths[camera].toStdString();
+        large.frames[0].sizes[camera] = {size.width(), size.height()};
+      }
+      const auto allocation_limit = QImageReader::allocationLimit();
+      QImageReader::setAllocationLimit(1);
+      MatchEditorDialog large_dialog(large, large);
+      require(
+          widget<QPushButton>(large_dialog, "matchEditorSave")->isEnabled(),
+          "Both full-resolution camera originals must open above Qt's temporary decode limit");
+      QImageReader::setAllocationLimit(allocation_limit);
+      if (inspect_real_pair)
+        return 0;
+    }
     QWidget owner;
     owner.show();
     MatchEditorDialog dialog(automatic, automatic, &owner);

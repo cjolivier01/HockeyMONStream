@@ -273,6 +273,14 @@ int main() {
     test_failures();
     test_publication_conflicts();
     test_source_bounds();
+    QTemporaryDir originals;
+    const auto interlaced = originals.filePath("camera.png");
+    fixture(interlaced, 35, 27, true);
+    const auto camera = readCalibrationPng(interlaced, QSize(35, 27), true);
+    require(camera.size() == QSize(35, 27), "Native camera decode must support Adam7 PNGs");
+    for (int y = 0; y < camera.height(); ++y)
+      for (int x = 0; x < camera.width(); ++x)
+        require(camera.pixelColor(x, y) == QColor(x, y, 99), "Adam7 passes must preserve every native camera pixel");
     test_success(640, 360);
     test_success(640, 360, true);
     test_success(20419, 9547);

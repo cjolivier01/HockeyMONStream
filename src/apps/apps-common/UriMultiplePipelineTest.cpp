@@ -163,8 +163,10 @@ void inspect_hardware_decoder(GstBin*, GstBin*, GstElement* element, gpointer da
         auto* stats = static_cast<DecoderSettingsStats*>(data);
         GstElement* decoder = gst_pad_get_parent_element(pad);
         guint extra = G_MAXUINT;
-        gboolean latency = !stats->low_latency;
-        g_object_get(decoder, "num-extra-surfaces", &extra, "low-latency-mode", &latency, nullptr);
+        gboolean latency = FALSE;
+        g_object_get(decoder, "num-extra-surfaces", &extra, nullptr);
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(decoder), "low-latency-mode"))
+          g_object_get(decoder, "low-latency-mode", &latency, nullptr);
         gst_object_unref(decoder);
         if (extra == stats->extra_surfaces && latency == stats->low_latency)
           ++stats->verified;
@@ -312,9 +314,14 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         const auto physical = stats->movie_origins.at(frame_meta->source_id) +
             gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
         const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
-        stats->mixed_timeline_valid &=
+        const bool valid =
             std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= int64_t(stats->physical_tick) &&
             std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
+        if (!valid && stats->mixed_timeline_valid)
+          std::cerr << "Mixed timestamp mismatch: source=" << frame_meta->source_id << " sequence=" << sequence
+                    << " physical=" << decoded_sequence->source_pts << " expected=" << physical
+                    << " logical=" << frame_meta->buf_pts << " expected=" << logical << '\n';
+        stats->mixed_timeline_valid &= valid;
       }
       ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
     }
@@ -383,7 +390,10 @@ bool make_synthetic_mp4(
     if (b_frames)
       cmd << "-bf 2 ";
   }
-  cmd << "-movflags +faststart " << shell_quote(path);
+  // Signed composition offsets keep short B-frame clips' presentation duration
+  // equal to their frame count / rate. Otherwise qtdemux can advertise 14/29
+  // fps for these 15/30 fps fixtures before decoding even begins.
+  cmd << "-movflags +faststart" << (b_frames ? "+negative_cts_offsets" : "") << " " << shell_quote(path);
   return run_shell(cmd.str());
 }
 
@@ -1392,7 +1402,12 @@ int run_decode_compose_encode(
     for (guint camera = 0; camera < 2; ++camera) {
       if (!pairs.mixed_timeline_valid || pairs.frames_by_source[camera] != expected_frames ||
           pairs.decode_mux_sequence_mismatches || pairs.missing_decoded_sequence_meta || !pairs.exact_frame_pairs) {
-        std::cerr << "Mixed camera lost its trim-relative frame phase or sequence\n";
+        std::cerr << "Mixed camera lost its trim-relative frame phase or sequence: camera=" << camera
+                  << " frames=" << pairs.frames_by_source[camera] << " expected=" << expected_frames
+                  << " timeline=" << pairs.mixed_timeline_valid
+                  << " mismatches=" << pairs.decode_mux_sequence_mismatches
+                  << " missing=" << pairs.missing_decoded_sequence_meta << " paired=" << pairs.exact_frame_pairs
+                  << '\n';
         return 7;
       }
     }
@@ -2119,14 +2134,15 @@ int main(int argc, char** argv) {
   std::vector<std::string> main10, shifted_main10;
   for (unsigned chapter = 0; chapter < 3; ++chapter) {
     const fs::path path = tmpdir / ("main10_" + std::to_string(chapter) + ".mp4");
-    if (!make_synthetic_mp4(path, 1, chapter * 60, 440, true)) {
+    // Jetson HEVC decoding requires both dimensions to be at least 180.
+    if (!make_synthetic_mp4(path, 1, chapter * 60, 440, true, 0, "384x216")) {
       fs::remove_all(tmpdir);
       return 2;
     }
     main10.push_back(to_file_uri(path));
     const fs::path shifted_path = tmpdir / ("main10_shifted_" + std::to_string(chapter) + ".mp4");
     const double duration = chapter == 0 ? 0.8 : (chapter == 1 ? 1.2 : 1.0);
-    if (!make_synthetic_mp4(shifted_path, duration, chapter * 60 + 30, 494, true)) {
+    if (!make_synthetic_mp4(shifted_path, duration, chapter * 60 + 30, 494, true, 0, "384x216")) {
       fs::remove_all(tmpdir);
       return 2;
     }
@@ -2137,9 +2153,19 @@ int main(int argc, char** argv) {
   // inputs qualify ownership/counts; the full-canvas memory regression is in
   // scripts/test_uri_playlist_memory.py.
   if (!startup_seek_only) {
+    // Jetson's decoder exposes surface counts but not the dGPU-only latency
+    // property. Exercise every supported setting, without querying absent ones.
+    GstElement* decoder = gst_element_factory_make("nvv4l2decoder", nullptr);
+    if (!decoder)
+      return 2;
+    const bool supports_low_latency =
+        g_object_class_find_property(G_OBJECT_GET_CLASS(decoder), "low-latency-mode") != nullptr;
+    gst_object_unref(decoder);
     for (const bool main10_codec : {false, true}) {
       for (const guint extra_surfaces : {0U, 1U, 2U}) {
         for (const bool low_latency : {false, true}) {
+          if (low_latency && !supports_low_latency)
+            continue;
           std::cout << "Decoder matrix: main10=" << main10_codec << " extra=" << extra_surfaces
                     << " low-latency=" << low_latency << std::endl;
           const int matrix_rc = run_lossless_two_camera_mux(

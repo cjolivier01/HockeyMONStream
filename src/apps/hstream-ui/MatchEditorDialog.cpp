@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/CalibrationImage.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,9 +43,7 @@ QPointF endpoint(const FeatureMatch& match, int camera) {
 }
 
 // These are retained offline stills, not video surfaces. Only the current pair
-// is decoded. Retain native pixels for accurate editing, with explicit bounds
-// on encoded bytes and decoded dimensions; Qt also enforces its allocation cap.
-constexpr qint64 kMaximumImageBytes = hm::stitching::kMaximumEditableImageBytes;
+// is decoded. Retain native pixels for accurate editing and check decoded geometry.
 constexpr qint64 kMaximumImagePixels = hm::stitching::kMaximumEditableImagePixels;
 
 class MatchView : public QGraphicsView {
@@ -70,8 +69,8 @@ class MatchView : public QGraphicsView {
     ready_ = false;
     const QString filename = QString::fromStdString(path.string());
     QFileInfo info(filename);
-    if (!info.isFile() || info.isSymLink() || info.size() > kMaximumImageBytes)
-      return "Camera image is missing or exceeds the editor's file limit.";
+    if (!info.isFile() || info.isSymLink())
+      return "Camera image is missing or is not a regular file.";
     QImageReader reader(filename, "png");
     const QSize size = reader.size();
     if (size != QSize(expected.width, expected.height) || size.width() <= 0 || size.height() <= 0 ||
@@ -79,11 +78,15 @@ class MatchView : public QGraphicsView {
         size.height() > hm::stitching::kMaximumEditableImageDimension ||
         qint64(size.width()) * size.height() > kMaximumImagePixels)
       return "Camera image dimensions differ from the retained match set or exceed the editor's limit.";
-    QImage decoded = reader.read();
+    // Decode the native camera rows directly into display pixels. An 8K RGB16
+    // frame exceeds Qt's default limit if first decoded into a 64-bit QImage.
+    QImage decoded = readCalibrationPng(filename, size, true);
+    if (decoded.isNull())
+      decoded = reader.read();
     if (decoded.isNull())
       return "Cannot decode camera image: " + reader.errorString();
-    // QImageReader supports RGB/RGBA 16-bit PNG. Conversion is only for display;
-    // saved images and floating-point match coordinates are never resampled.
+    if (decoded.size() != size)
+      return "Camera image dimensions changed while opening the retained match set.";
     image_->setPixmap(QPixmap::fromImage(decoded.convertToFormat(QImage::Format_RGB32)));
     ready_ = !image_->pixmap().isNull();
     fit();

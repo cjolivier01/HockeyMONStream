@@ -319,7 +319,9 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
         }
         const auto canvas = rink::read_mapping_canvas_placement_locked(root);
         const auto project = rink::read_bounded_regular_file_no_follow(
-            root / "_hockeymon/autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
+            root / "_hockeymon/autooptimiser_out.pto",
+            rink::maximum_stitch_artifact_bytes("autooptimiser_out.pto"),
+            "rink project");
         if (!canvas.ok())
           return canvas.status();
         if (!project.ok())
@@ -668,9 +670,10 @@ absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_director
     if (!saved.ok())
       return saved.status();
     result.saved_map = *saved;
+    // CalibrationRevision above already hashed this file at the shared bound.
     auto pto = rink::read_bounded_regular_file_no_follow(
         std::filesystem::path(game_directory.toStdString()) / "_hockeymon/autooptimiser_out.pto",
-        4 * 1024 * 1024,
+        rink::maximum_stitch_artifact_bytes("autooptimiser_out.pto"),
         "rink-map project");
     if (!pto.ok())
       return pto.status();

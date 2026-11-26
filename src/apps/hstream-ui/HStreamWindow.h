@@ -1068,6 +1068,12 @@ class HStreamWindow : public QMainWindow {
   QComboBox* scoreboard_position_combo_{nullptr};
   QDoubleSpinBox* scoreboard_scale_spin_{nullptr};
   double saved_scoreboard_scale_{};
+  struct ScoreboardFlipControl {
+    const char* key;
+    QCheckBox* check{};
+    bool saved{};
+  };
+  ScoreboardFlipControl scoreboard_flips_[2]{{"flip_horizontal"}, {"flip_vertical"}};
   QLabel* scoreboard_controls_status_{nullptr};
   QString saved_scoreboard_position_{"upper-left"};
   QString pending_scoreboard_property_;

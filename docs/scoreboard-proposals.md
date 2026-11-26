@@ -111,3 +111,9 @@ NVIDIA copies the original ROI on the GPU to normalize video alpha, then warps
 it once directly into the final overlay rectangle. AMD samples the original
 panorama directly into its output. Neither path resizes an extracted scoreboard
 before the perspective warp or reads video back to the CPU.
+
+Beside Scale, **Flip horizontally** mirrors the scoreboard left to right and
+**Flip vertically** turns it top to bottom. Selecting both rotates the overlay
+180 degrees within its final rectangle. The two settings apply on the next
+Play and Save Preset retains them. The baseline sets
+`rink.scoreboard.flip_horizontal` and `rink.scoreboard.flip_vertical` to false.

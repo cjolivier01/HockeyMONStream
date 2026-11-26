@@ -263,15 +263,6 @@ class PipelineProcess {
     return pid_ > 0 && ::kill(pid_, SIGINT) == 0;
   }
 
-  bool Terminate() {
-    if (pid_ <= 0 || ::kill(pid_, SIGKILL) != 0) {
-      return false;
-    }
-    const pid_t terminated = ::waitpid(pid_, nullptr, 0);
-    pid_ = -1;
-    return terminated > 0;
-  }
-
   size_t Mark() {
     Drain();
     return output_text_.size();
@@ -417,6 +408,8 @@ application:
   complete-configuration: 1
 tiled-display:
   enable: 0
+primary-gie:
+  enable: 0
 source0:
   enable: 1
   type: 3
@@ -537,12 +530,11 @@ bool write_nonstitch_peer_pipeline_config(
   }
   try {
     YAML::Node config = YAML::LoadFile(path.string());
-    config.remove("hmstitcher");
+    // Baseline properties recreate an omitted section during layering.
+    config["hmstitcher"]["enable"] = 0;
     config["application"]["complete-configuration"] = 0;
-    const std::string left_uri =
-        "file://" + (media_path.empty() ? game_dir / "cam1" / "GX010001.MP4" : media_path).string();
-    const std::string right_uri =
-        "file://" + (media_path.empty() ? game_dir / "cam2" / "GX010002.MP4" : media_path).string();
+    const std::string left_uri = "file://" + (media_path.empty() ? game_dir / "left.mp4" : media_path).string();
+    const std::string right_uri = "file://" + (media_path.empty() ? game_dir / "right.mp4" : media_path).string();
     config["source0"]["uri"] = left_uri;
     config["source0"]["uri-list"].push_back(left_uri);
     config["source1"]["uri"] = right_uri;
@@ -579,8 +571,8 @@ bool write_game_config(
   // dedicated AKAZE cases select that matcher explicitly.
   output << "game:\n"
          << "  videos:\n"
-         << "    left: [cam1/GX010001.MP4]\n"
-         << "    right: [cam2/GX010002.MP4]\n"
+         << "    left: [left.mp4]\n"
+         << "    right: [right.mp4]\n"
          << "  stitching:\n"
          << "    frame_offsets:\n"
          << "      left: 0\n"
@@ -600,8 +592,8 @@ bool write_game_config(
     output << "  control_point_matcher: " << control_point_matcher << "\n";
   output << "hstream_ui:\n"
          << "  video_roles:\n"
-         << "    left: [cam1/GX010001.MP4]\n"
-         << "    right: [cam2/GX010002.MP4]\n"
+         << "    left: [left.mp4]\n"
+         << "    right: [right.mp4]\n"
          << "  stitching_calibration:\n"
          << "    control_points: " << control_points << "\n"
          << (frame_count > 0 ? "    frame_count: " + std::to_string(frame_count) + "\n" : "") << "    status: pending\n"
@@ -748,8 +740,8 @@ int main(int argc, char** argv) {
   const fs::path short_nonstitch_peer_pipeline_config = root / "short-nonstitch-peer-pipeline.yaml";
   const fs::path short_peer_media = root / "short-peer.mp4";
   const fs::path plugin_directory = fs::path(argv[2]).parent_path();
-  fs::create_directories(game / "cam1");
-  fs::create_directories(game / "cam2");
+  // Root left.mp4/right.mp4 also give configure-only discovery explicit roles.
+  // Synthetic patterns cannot provide rink evidence to orient unnamed cameras.
   // write_game_config uses a bare ofstream, which will not create the private
   // directory its config moved into. Without this every call to it failed and
   // the scenarios that depend on a game config never ran.
@@ -803,7 +795,7 @@ int main(int argc, char** argv) {
            "yuv420p",
            "-c:a",
            "aac",
-           (game / "cam1" / "GX010001.MP4").string(),
+           (game / "left.mp4").string(),
            "-map",
            "[right]",
            "-map",
@@ -820,7 +812,7 @@ int main(int argc, char** argv) {
            "yuv420p",
            "-c:a",
            "aac",
-           (game / "cam2" / "GX010002.MP4").string()},
+           (game / "right.mp4").string()},
           {}),
       "overlapping camera videos must be generated");
   ok &= expect(
@@ -831,7 +823,7 @@ int main(int argc, char** argv) {
            "error",
            "-y",
            "-i",
-           (game / "cam1" / "GX010001.MP4").string(),
+           (game / "left.mp4").string(),
            "-t",
            "0.25",
            "-c",
@@ -1292,9 +1284,9 @@ int main(int argc, char** argv) {
               "configure-only must run calibration after content validation rejects the existing seam")) {
         return false;
       }
-      return expect(
-                 configure_only_invalid_seam.Terminate(),
-                 "configure-only regression process must terminate after reaching calibration") &&
+      return stop_successfully(
+                 &configure_only_invalid_seam,
+                 "configure-only regression must release game ownership before the next scenario") &&
           expect(restore_configure_only_seam(game / "_hockeymon/seam_file.png"),
                  "configure-only regression must restore the valid seam fixture");
     }();
@@ -1911,7 +1903,13 @@ int main(int argc, char** argv) {
               "same-stage zero-time replacements must reach PLAYING before restart completes")) {
         return false;
       }
-      auto persisted = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
+      // Retire playback before inspecting its completed generation: a running
+      // context may briefly hold the admission lock while publishing inventory.
+      if (!stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable"))
+        return false;
+      const auto persisted = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml", true);
+      if (!expect(persisted.ok(), persisted.status().ToString().c_str()))
+        return false;
       if (persisted.ok() && persisted->has_value()) {
         zero_time_invalidation_id =
             (**persisted)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("");
@@ -1922,7 +1920,7 @@ int main(int argc, char** argv) {
               "an explicit zero CLI time must remove the nonzero dependency and own its new generation")) {
         return false;
       }
-      return stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable");
+      return true;
     }();
   }
 

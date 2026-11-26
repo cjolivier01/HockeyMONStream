@@ -49,7 +49,7 @@ void release_png_context(PngDecodeContext* context) {
   std::free(context);
 }
 
-PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& requested_size) {
+PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& requested_size, bool require_native_size) {
   PngPreview result;
   auto* context = static_cast<PngDecodeContext*>(std::calloc(1, sizeof(PngDecodeContext)));
   if (!context)
@@ -93,9 +93,16 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
       nullptr,
       nullptr);
   const uint64_t source_pixels = static_cast<uint64_t>(source_width) * source_height;
+  if (require_native_size &&
+      (source_width != static_cast<png_uint_32>(requested_size.width()) ||
+       source_height != static_cast<png_uint_32>(requested_size.height()))) {
+    release_png_context(context);
+    return result;
+  }
   if (source_width == 0 || source_height == 0 || source_pixels > kMaximumSourcePixels || requested_size.width() <= 0 ||
       requested_size.height() <= 0 || static_cast<png_uint_32>(requested_size.width()) > source_width ||
-      static_cast<png_uint_32>(requested_size.height()) > source_height || interlace_type != PNG_INTERLACE_NONE) {
+      static_cast<png_uint_32>(requested_size.height()) > source_height ||
+      (!require_native_size && interlace_type != PNG_INTERLACE_NONE)) {
     release_png_context(context);
     return result;
   }
@@ -113,6 +120,7 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
     png_set_gray_to_rgb(context->png);
   if (!(color_type & PNG_COLOR_MASK_ALPHA) && !has_transparency)
     png_set_add_alpha(context->png, 0xff, PNG_FILLER_AFTER);
+  const int passes = png_set_interlace_handling(context->png);
   png_read_update_info(context->png, context->info);
   if (png_get_bit_depth(context->png, context->info) != 8 || png_get_channels(context->png, context->info) != 4) {
     release_png_context(context);
@@ -126,37 +134,54 @@ PngPreview read_bounded_png_preview(const QByteArray& path, const QSize& request
   }
   const size_t preview_stride = static_cast<size_t>(requested_size.width()) * 4;
   const size_t preview_bytes = preview_stride * static_cast<size_t>(requested_size.height());
-  context->source_row = static_cast<unsigned char*>(std::malloc(source_stride));
-  context->preview_pixels = static_cast<unsigned char*>(std::malloc(preview_bytes));
-  if (!context->source_row || !context->preview_pixels) {
+  context->preview_pixels = static_cast<unsigned char*>(std::calloc(1, preview_bytes));
+  if (!context->preview_pixels) {
     release_png_context(context);
     return result;
   }
 
-  int preview_y = 0;
-  for (png_uint_32 source_y = 0; source_y < source_height; ++source_y) {
-    png_read_row(context->png, context->source_row, nullptr);
-    if (preview_y >= requested_size.height())
-      continue;
-    const png_uint_32 selected_source_y = static_cast<png_uint_32>(
-        (static_cast<uint64_t>(2 * preview_y + 1) * source_height) /
-        (2 * static_cast<uint64_t>(requested_size.height())));
-    if (source_y != selected_source_y)
-      continue;
-    unsigned char* preview_row = context->preview_pixels + static_cast<size_t>(preview_y) * preview_stride;
-    for (int preview_x = 0; preview_x < requested_size.width(); ++preview_x) {
-      const png_uint_32 source_x = static_cast<png_uint_32>(
-          (static_cast<uint64_t>(2 * preview_x + 1) * source_width) /
-          (2 * static_cast<uint64_t>(requested_size.width())));
-      std::copy_n(context->source_row + static_cast<size_t>(source_x) * 4, 4, preview_row + preview_x * 4);
+  if (require_native_size) {
+    // Adam7 passes refine different pixels in the same output rows.
+    for (int pass = 0; pass < passes; ++pass) {
+      for (png_uint_32 y = 0; y < source_height; ++y)
+        png_read_row(context->png, context->preview_pixels + y * preview_stride, nullptr);
     }
-    ++preview_y;
+  } else {
+    context->source_row = static_cast<unsigned char*>(std::malloc(source_stride));
+    if (!context->source_row) {
+      release_png_context(context);
+      return result;
+    }
+    int preview_y = 0;
+    for (png_uint_32 source_y = 0; source_y < source_height; ++source_y) {
+      png_read_row(context->png, context->source_row, nullptr);
+      if (preview_y >= requested_size.height())
+        continue;
+      const png_uint_32 selected_source_y = static_cast<png_uint_32>(
+          (static_cast<uint64_t>(2 * preview_y + 1) * source_height) /
+          (2 * static_cast<uint64_t>(requested_size.height())));
+      if (source_y != selected_source_y)
+        continue;
+      unsigned char* preview_row = context->preview_pixels + static_cast<size_t>(preview_y) * preview_stride;
+      if (source_width == static_cast<png_uint_32>(requested_size.width())) {
+        std::copy_n(context->source_row, preview_stride, preview_row);
+        ++preview_y;
+        continue;
+      }
+      for (int preview_x = 0; preview_x < requested_size.width(); ++preview_x) {
+        const png_uint_32 source_x = static_cast<png_uint_32>(
+            (static_cast<uint64_t>(2 * preview_x + 1) * source_width) /
+            (2 * static_cast<uint64_t>(requested_size.width())));
+        std::copy_n(context->source_row + static_cast<size_t>(source_x) * 4, 4, preview_row + preview_x * 4);
+      }
+      ++preview_y;
+    }
+    if (preview_y != requested_size.height()) {
+      release_png_context(context);
+      return result;
+    }
   }
   png_read_end(context->png, context->info);
-  if (preview_y != requested_size.height()) {
-    release_png_context(context);
-    return result;
-  }
 
   result = {context->preview_pixels, requested_size.width(), requested_size.height(), static_cast<int>(preview_stride)};
   context->preview_pixels = nullptr;
@@ -187,8 +212,8 @@ QSize scoreboardPreviewSize(const QSize& source_size) {
   };
 }
 
-QImage readCalibrationPng(const QString& path, const QSize& size) {
-  PngPreview preview = read_bounded_png_preview(QFile::encodeName(path), size);
+QImage readCalibrationPng(const QString& path, const QSize& size, bool require_native_size) {
+  PngPreview preview = read_bounded_png_preview(QFile::encodeName(path), size, require_native_size);
   return QImage(
       preview.pixels,
       preview.width,

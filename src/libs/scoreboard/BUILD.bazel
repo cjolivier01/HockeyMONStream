@@ -13,6 +13,7 @@ cc_library(
     deps = cuda_dependencies("scoreboard", [
         ":scoreboard_cuda",
         ":placement",
+        ":rectangle",
         "//src/libs/common:utils",
         "@com_google_absl//absl/synchronization",
         "@hm-cupano//src/pano:cuda_matrix",
@@ -66,12 +67,19 @@ cc_library(
 )
 
 cc_library(
+    name = "rectangle",
+    hdrs = ["ScoreboardRectangle.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = [":placement", "@opencv_linux//:opencv"],
+)
+
+cc_library(
     name = "plan",
     srcs = ["ScoreboardPlan.cpp"],
     hdrs = ["ScoreboardPlan.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":placement", "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
+    deps = [":placement", ":rectangle", "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_test(

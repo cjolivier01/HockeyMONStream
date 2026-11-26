@@ -1,4 +1,5 @@
 #include <QtCore/QFileInfo>
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
@@ -49,6 +50,37 @@ bool wait_for_preview(ProjectionCropDialog* dialog) {
   return false;
 }
 
+bool test_large_still_revision() {
+  QTemporaryDir directory;
+  if (!directory.isValid())
+    return false;
+  for (const char* name :
+       {"left.png",
+        "right.png",
+        "autooptimiser_out.pto",
+        ".autooptimiser_out.aligned.pto",
+        "stitching_canvas_provenance",
+        "config.yaml"}) {
+    if (!write(directory.filePath("_hockeymon/" + QString(name)), "x"))
+      return false;
+  }
+  QFile still(directory.filePath("_hockeymon/right.png"));
+  if (!still.open(QIODevice::ReadWrite) || !still.resize(512LL * 1024 * 1024 + 1))
+    return false;
+  still.close();
+  // Stored rink maps depend on this SHA-256 of each filename, decimal byte length and file contents.
+  const auto playback_revision = hm::stitching::RinkMapCalibrationRevision(directory.path().toStdString());
+  if (!expect(
+          playback_revision.ok() &&
+              *playback_revision == "bfdcca7924419ef20cfd6503360c96c3fc64a30579b18c962559686c49139d70",
+          "Streaming must preserve the saved rink-map revision for all camera bytes"))
+    return false;
+  return expect(
+      !RinkLevelingDialog::sourceRevision(directory.path()).isEmpty() &&
+          !RinkLevelingDialog::inProgressSourceRevision(directory.filePath("_hockeymon")).isEmpty(),
+      "Both saved and live calibration must hash a camera still larger than 512 MiB");
+}
+
 bool test_snapshot_paths() {
   QTemporaryDir game(QDir::tempPath() + "/hstream preview images-XXXXXX");
   QTemporaryDir tools;
@@ -56,8 +88,7 @@ bool test_snapshot_paths() {
   image.fill(Qt::gray);
   if (!expect(
           game.isValid() && tools.isValid() && QDir(game.path()).mkpath("_hockeymon") &&
-              image.save(game.filePath("_hockeymon/left.png")) &&
-              image.save(game.filePath("_hockeymon/right.png")),
+              image.save(game.filePath("_hockeymon/left.png")) && image.save(game.filePath("_hockeymon/right.png")),
           "Cannot create camera image fixtures"))
     return false;
   const QByteArray metadata =
@@ -119,7 +150,7 @@ bool test_snapshot_paths() {
 }
 
 // Optional read-only smoke against a real game, using installed Hugin tools.
-bool test_saved_game(const QString& directory) {
+bool test_game(const QString& directory, const QString& staging = {}, const QString& screenshot = {}) {
   const auto config = YAML::Load(read(QDir(directory).filePath("_hockeymon/config.yaml")).toStdString());
   const auto framing = hm::stitching::read_stitch_projection_framing(config);
   const auto camera = hm::stitching::read_stitch_camera_selection(config);
@@ -130,16 +161,27 @@ bool test_saved_game(const QString& directory) {
   const auto parameters = hm::stitching::read_stitch_projection_parameters(config, *projection);
   if (!parameters.ok())
     return false;
-  const auto revision = RinkLevelingDialog::sourceRevision(directory);
-  ProjectionCropDialog crop(directory, *framing, QString::fromStdString(projection_name), *parameters, *camera);
+  const bool in_progress = !staging.isEmpty();
+  const QString source = in_progress ? staging : directory;
+  const auto revision = [&] {
+    return in_progress ? RinkLevelingDialog::inProgressSourceRevision(staging)
+                       : RinkLevelingDialog::sourceRevision(directory);
+  };
+  const auto before = revision();
+  ProjectionCropDialog crop(
+      source, *framing, QString::fromStdString(projection_name), *parameters, *camera, {}, nullptr, in_progress);
+  crop.show();
   const bool ready = wait_for_preview(&crop);
-  RinkLevelingDialog leveling(directory, framing->rotation_degrees, nullptr, *camera);
+  if (!screenshot.isEmpty() && !crop.grab().save(screenshot))
+    return false;
+  RinkLevelingDialog leveling(
+      source, framing->rotation_degrees, nullptr, *camera, in_progress, *projection, *parameters, *framing);
   if (!leveling.loadError().isEmpty())
     std::cerr << "Leveling preview failed: " << leveling.loadError().toStdString() << '\n';
-  if (RinkLevelingDialog::sourceRevision(directory) != revision)
+  if (revision() != before)
     std::cerr << "Source calibration changed while opening previews\n";
   return expect(
-      ready && leveling.loadError().isEmpty() && RinkLevelingDialog::sourceRevision(directory) == revision,
+      ready && leveling.loadError().isEmpty() && !before.isEmpty() && revision() == before,
       "Real-game crop and leveling previews must load without changing source artifacts");
 }
 
@@ -147,5 +189,9 @@ bool test_saved_game(const QString& directory) {
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
-  return (argc == 2 ? test_saved_game(QString::fromLocal8Bit(argv[1])) : test_snapshot_paths()) ? 0 : 1;
+  if (argc == 5 && QString::fromLocal8Bit(argv[1]) == "--in-progress")
+    return test_game(argv[2], argv[3], argv[4]) ? 0 : 1;
+  if (argc == 2)
+    return test_game(argv[1]) ? 0 : 1;
+  return test_snapshot_paths() && test_large_still_revision() ? 0 : 1;
 }

@@ -6656,6 +6656,19 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
       values.remove("scoreboard_scale");
     }
   }
+  for (const std::string axis : {"horizontal", "vertical"}) {
+    const std::string path = "rink.scoreboard.flip_" + axis;
+    auto value = get_node(config_, path);
+    if (!value || value->IsNull())
+      value = get_node(recording_config_layers_, "baseline." + path);
+    if (!value || !value->IsScalar())
+      return absl::InvalidArgumentError(path + " requires a boolean");
+    try {
+      cropper["private-properties"]["scoreboard-flip-" + axis] = value->as<bool>() ? "1" : "0";
+    } catch (const YAML::Exception&) {
+      return absl::InvalidArgumentError(path + " requires a boolean");
+    }
+  }
   cropper["scoreboard-position"] = position;
   explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-position"] = std::max(0, position_rank);
   cropper["scoreboard-scale"] = scale;

@@ -341,6 +341,13 @@ int main() {
     TemporaryDirectory temporary;
     for (const auto* name : {"roundtrip", "copied", "bounds", "coordinates"})
       fs::create_directory(temporary.path / name);
+    const auto large_game = temporary.path / "large-original";
+    fs::create_directory(large_game);
+    auto large = fixture(large_game);
+    fs::resize_file(large.frames[0].images[0], 512ULL * 1024 * 1024 + 1);
+    const auto fingerprint = take(PublishCalibrationMatches(large_game, large));
+    require(
+        LoadCalibrationMatches(large_game, fingerprint).ok(), "A large camera original must survive match inspection");
     roundtrip_and_reset(temporary.path / "roundtrip", temporary.path / "copied");
     metadata_and_bounds(temporary.path / "bounds");
     coordinate_roundtrip(temporary.path / "coordinates");
