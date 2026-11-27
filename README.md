@@ -154,13 +154,11 @@ and [Windows WSL details](docs/windows-wsl-installer.md) before installing.
 
 ## Licensing
 
-This repository is source-available but is **not covered by one blanket
-open-source license**. It contains files under the root MIT license, Apache-2.0
-components, and NVIDIA-derived files marked `LicenseRef-NvidiaProprietary`.
-NVIDIA DeepStream and downloaded model assets also have their own terms. A
-file's specific notice controls when present; the root MIT license does not
-override it. Read [LICENSING.md](LICENSING.md) before use, modification, or
-redistribution.
+Original HockeyMONStream code and documentation use GPLv3 or later by
+default. Imported DeepStream-Yolo material retains its MIT notice.
+Separately licensed components, NVIDIA-derived files, SDKs and model assets
+have their own terms. See the [GPL text](LICENSE.md) and the
+[licensing summary, including the grant for earlier revisions](LICENSING.md).
 
 The repository and public product are named HockeyMONStream. Existing runtime
 and packaging identifiers retain their legacy HStream names for compatibility:
@@ -382,7 +380,8 @@ fails instead of silently selecting another copy.
 
 ## Acknowledgements
 
-This repo contains code and build patterns derived from the DeepStream-Yolo ecosystem (see `LICENSE.md` and `docs/`).
+This repo contains code and build patterns derived from DeepStream-Yolo.
+See the [upstream MIT notice](third_party/DeepStream-Yolo-LICENSE.txt).
 
 Game configuration, calibration, experiments and runtime state live in
 `<game>/_hockeymon/`, alongside a versioned `manifest.json` inventory. Recordings

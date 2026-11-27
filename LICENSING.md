@@ -1,24 +1,29 @@
 # HockeyMONStream licensing
 
-HockeyMONStream is a source-available repository with mixed file-level
-licensing. Do not assume that the root `LICENSE.md` applies to every file.
+The default license for original HockeyMONStream code and documentation is the
+GNU General Public License as published by the Free Software Foundation,
+either version 3 or (at your option) any later version
+(`GPL-3.0-or-later`). [Full GPLv3 text](LICENSE.md).
 
-- Files covered by the root `LICENSE.md` are available under the MIT license.
-- Some components are marked `SPDX-License-Identifier: Apache-2.0` and retain
-  that license.
-- NVIDIA-derived source files are marked
-  `SPDX-License-Identifier: LicenseRef-NvidiaProprietary` and retain the NVIDIA
-  copyright and proprietary-use notice in those files. An express NVIDIA
-  license may be required for their use, reproduction, modification,
-  disclosure, or distribution.
-- Third-party libraries, tools, model files, and runtime dependencies retain
-  their own licenses. In particular, NVIDIA DeepStream is a separately
-  obtained dependency and is not licensed by this repository's MIT file.
-- Jetson release packages redistribute Hugin components under GNU General
-  Public License terms; the corresponding Hugin source archive and build
-  script accompany each application release that contains the Jetson package.
-- Notices for optional native model assets are recorded under
-  `third_party/native_model_licenses/`.
+Chris Olivier also grants this license for the contributions he owns in
+earlier HockeyMONStream revisions, back to their first appearance, wherever
+the project default applied. Recipients of earlier copies may continue to
+use those copies under the terms they received.
 
-The most specific license or notice associated with a file or dependency
-controls. This summary is informational and is not legal advice.
+## Component licenses
+
+- The imported DeepStream-Yolo code, configuration and documentation retain
+  their [original MIT notice](third_party/DeepStream-Yolo-LICENSE.txt), including
+  the copyright notices for Marcos Luciano Piropo Santos and NVIDIA.
+- Files and components with their own terms keep those terms. Examples include
+  the Apache-2.0 `dsxvideoconvert` plugin, the MIT-licensed `kmeans` library
+  and the CC0 camera lens catalog.
+- NVIDIA-derived files marked `LicenseRef-NvidiaProprietary` carry NVIDIA's
+  proprietary-use notice. Use and redistribution of that material require the
+  applicable NVIDIA permissions. NVIDIA DeepStream and other SDKs have their
+  own license terms.
+- Third-party tools and model assets carry their own terms. In the source
+  tree, model notices are under `third_party/native_model_licenses/` and
+  `configs/player-models/licenses/`. Current Debian and Jetson packages
+  depend on the distribution's Hugin tools. Consult the notices accompanying
+  older releases that bundled Hugin.

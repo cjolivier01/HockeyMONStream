@@ -554,7 +554,11 @@ for native_model_notice in Apache-2.0-LICENSE.txt DeDoDe-LICENSE.txt NOTICE.txt;
   install -m 0644 "${native_model_notice_source}" \
     "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models/${native_model_notice}"
 done
-install -m 0644 "${TOPDIR}/LICENSE.md" "${STAGING}/usr/share/doc/${PKG_NAME}/copyright"
+package_doc="${STAGING}/usr/share/doc/${PKG_NAME}"
+install -m 0644 "${TOPDIR}/LICENSING.md" "${package_doc}/copyright"
+install -m 0644 "${TOPDIR}/LICENSE.md" "${package_doc}/LICENSE.md"
+install -D -m 0644 "${TOPDIR}/third_party/DeepStream-Yolo-LICENSE.txt" \
+  "${package_doc}/third_party/DeepStream-Yolo-LICENSE.txt"
 
 # ---------- HStream GStreamer plugins ----------
 echo "[make_deb] Staging GStreamer plugins..."
