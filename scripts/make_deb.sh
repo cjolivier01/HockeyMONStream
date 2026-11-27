@@ -1590,6 +1590,8 @@ echo "[make_deb] Building ${DEB_PATH}..."
 dpkg-deb --build --root-owner-group "${STAGING}" "${DEB_PATH}"
 INSTALLER_PATH="${OUTPUT_DIR}/install-hstream-deb"
 install -m 0755 "${TOPDIR}/scripts/install_deb.sh" "${INSTALLER_PATH}"
+# This helper also travels separately from the package.
+sed 's/^/# /' "${TOPDIR}/LICENSE.md" >> "${INSTALLER_PATH}"
 
 if [[ "${HSTREAM_CONTAINER_PACKAGE_STAGING:-}" == "1" ]]; then
   echo ""
