@@ -2562,13 +2562,14 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         table->rowCount() == 3 && table->item(2, 0)->text().startsWith("Players"),
         "In-memory Add must reuse the queued main-derived count after main switches counts");
     add_options(observer);
+    auto* observer_rows = widget<QTableWidget>(observer, "stitchExperimentCandidates");
     require(
-        widget<QTableWidget>(observer, "stitchExperimentCandidates")->rowCount() == 1 &&
-            widget<QLabel>(observer, "stitchExperimentStatus")
-                ->text()
-                .contains("Another dialog saved this frame count"),
-        "A newly discovered count owner requires reload instead of falling through to an ordinary solve");
-    observer.reject();
+        observer_rows->rowCount() == 4 && observer_rows->item(3, 0)->text().startsWith("Players") &&
+            observer_rows->item(3, 1)->text() == "200",
+        "Add must discover another dialog's retained count and preserve this dialog's requested settings");
+    add_options(observer);
+    require(observer_rows->rowCount() == 4, "Refreshing another dialog's history must preserve Add deduplication");
+    answer_close_guard(observer, "stitchExperimentCloseDiscard", false);
     answer_close_guard(queued, "stitchExperimentCloseDiscard", false);
     require(wait_until([&] { return !queued.isVisible(); }, 1000), "Retained-count queue did not close");
   }
@@ -2582,7 +2583,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
     add_options(reopened);
     require(
-        table->rowCount() == 4 && table->item(3, 0)->text().startsWith("Players"),
+        table->rowCount() == 5 && table->item(4, 0)->text().startsWith("Players"),
         "Reopening an unstarted frozen count must add only a solve, without a new baseline");
     widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->click();
     require(
@@ -2591,13 +2592,13 @@ void exercise_saved_selection(const QString& game, const QString& root) {
             10000),
         "Retained count solve queue did not finish");
     require(
-        table->item(3, 5)->text().contains("RMS is too large") && !read(arguments).contains("--force-reconfigure") &&
+        table->item(4, 5)->text().contains("RMS is too large") && !read(arguments).contains("--force-reconfigure") &&
             !read(arguments).contains("--stitching-player-scan-output"),
         "Retained count variants must run directly using their frozen inputs");
     const auto opened = OpenStitchingExperimentStore(game.toStdString());
     require(opened.ok(), "Cannot open retained-count results");
     const auto catalog = LoadStitchingExperimentStore(*opened);
-    require(catalog.ok() && catalog->experiments.size() == 3, "Every retained-count solve must remain durable");
+    require(catalog.ok() && catalog->experiments.size() == 4, "Every retained-count solve must remain durable");
     for (const auto& row : catalog->experiments) {
       const auto retained = LoadPlayerFrameInputs(row.workspace.game_directory, plan);
       require(
@@ -2788,6 +2789,35 @@ void exercise_workflow_frame_selection(const QString& game, const QString& root)
   record.workflow_active = false;
   record.failure.clear();
   publish("succeeded", true);
+  // A later solve can publish the same count from its own result attempt.
+  // Its catalog key then names this sibling, rather than the original frame stage.
+  auto sibling_settings = record.workspace.settings;
+  sibling_settings.control_point_matcher = "akaze-hamming";
+  const auto workspace = CreateStitchingExperimentWorkspace(
+      store->game_directory, record.workspace.root, sibling_settings, record.sequence + 1);
+  require(workspace.ok(), "Cannot prepare a sibling using the workflow's frozen inputs");
+  StoredStitchingExperiment sibling;
+  sibling.workspace = *workspace;
+  sibling.sequence = record.sequence + 1;
+  sibling.selection_owner_sequence = record.sequence;
+  sibling.selection_owner_workspace_key = key.toStdString();
+  sibling.selection_fingerprint = plan.fingerprint;
+  sibling.state = "complete";
+  sibling.artifact_generation_id = "sibling-solve-generation";
+  sibling.workflow_id = record.workflow_id;
+  sibling.workflow_directory = record.workflow_directory;
+  sibling.result_attempt_id = "sibling-solve";
+  auto result = *workspace;
+  result.root = record.workflow_directory / "attempts" / sibling.result_attempt_id / "workspace";
+  result.game_directory = result.root / result.game_id;
+  std::filesystem::create_directories(result.root);
+  std::filesystem::copy(
+      workspace->game_directory,
+      result.game_directory,
+      std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks);
+  sibling.result_workspace = result;
+  require(SaveStitchingExperiment(*store, sibling, true).ok(), "Cannot publish the sibling as the saved count owner");
+  std::filesystem::remove_all(workspace->game_directory / "_hockeymon/player-frame-inputs");
   {
     auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
     require(
@@ -2804,6 +2834,69 @@ void exercise_workflow_frame_selection(const QString& game, const QString& root)
           },
           5000),
       "Completion must release controls without changing the saved-frame policy");
+
+  config["stitching"].remove("calibration_frame_selection");
+  config["stitching"].remove("calibration_frame_inputs_fingerprint");
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  StitchingExperimentDialog variants(
+      game, "/bin/false", working, game + "/_hockeymon/config.yaml", environment, 150, 2, "00:00:00");
+  variants.show();
+  auto* rows = widget<QTableWidget>(variants, "stitchExperimentCandidates");
+  auto* matcher = widget<QComboBox>(variants, "stitchExperimentControlPointMatcher");
+  matcher->setCurrentIndex(matcher->findData("akaze-hamming"));
+  widget<QToolButton>(variants, "stitchExperimentGeometricFilteringToggle")->click();
+  auto* epipolar = widget<QCheckBox>(variants, "stitchExperimentEpipolarRansac");
+  auto* homography = widget<QCheckBox>(variants, "stitchExperimentHomographyConsistency");
+  epipolar->setChecked(true);
+  homography->setChecked(true);
+  widget<QCheckBox>(variants, "stitchExperimentPreferPlayerFrames")->setChecked(false);
+  const int retained_rows = rows->rowCount();
+  add_options(variants);
+  if (!screenshot_dir.isEmpty()) {
+    variants.resize(1800, 1000);
+    widget<QSplitter>(variants, "stitchExperimentSplitter")->setSizes({1150, 610});
+    QCoreApplication::processEvents();
+    rows->scrollToItem(rows->item(rows->rowCount() - 1, 8));
+    require(variants.grab().save(screenshot_dir + "/qt-retained-akaze-variant.png"), "Cannot capture AKAZE variant");
+  }
+  require(
+      rows->rowCount() == retained_rows + 1, "A completed workflow sibling must supply frames to a new AKAZE solve");
+  epipolar->click();
+  add_options(variants);
+  homography->click();
+  add_options(variants);
+  widget<QLineEdit>(variants, "stitchExperimentControlPoints")->setText("350");
+  add_options(variants);
+  add_options(variants);
+  require(
+      rows->rowCount() == retained_rows + 4, "Each changed filter or point cap must queue one distinct AKAZE solve");
+  widget<QLineEdit>(variants, "stitchExperimentFrameCounts")->setText("1");
+  add_options(variants);
+  require(rows->rowCount() == retained_rows + 5, "Changing just the frame count must queue another AKAZE solve");
+
+  widget<QPushButton>(variants, "startStitchExperimentBatchButton")->click();
+  require(
+      wait_until(
+          [&] { return widget<QLabel>(variants, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+          30000),
+      "The retained workflow variants did not reach local solves");
+  auto completed = LoadStitchingExperimentStore(*store);
+  require(completed.ok() && completed->experiments.size() == 7, "Lost the saved AKAZE variant history");
+  const auto sibling_key = workspace->game_directory.lexically_relative(store->directory).generic_string();
+  for (size_t i = 2; i < 6; ++i) {
+    const auto& variant = completed->experiments[i];
+    const auto inputs = LoadPlayerFrameInputs(variant.workspace.game_directory, plan);
+    require(
+        variant.selection_owner_workspace_key == sibling_key && variant.selection_fingerprint == plan.fingerprint &&
+            inputs.ok() && inputs->has_value() && variant.workspace.settings.control_point_matcher == "akaze-hamming" &&
+            variant.workspace.settings.control_point_filtering == ControlPointFiltering{i == 2, i <= 3} &&
+            variant.workspace.settings.control_points == (i < 5 ? 150 : 350),
+        "Each AKAZE solve must use the adopted images, its own filtering and its own point cap");
+  }
+  require(
+      completed->experiments.back().selection_fingerprint.empty() &&
+          completed->experiments.back().workspace.settings.frame_count == 1,
+      "One-frame solve must keep its own anchor policy");
 }
 
 #ifdef Q_OS_LINUX

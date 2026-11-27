@@ -140,6 +140,7 @@ void install_plan(StoredStitchingExperiment& record, const PlayerFrameSelectionP
 bool workflow_references(const fs::path& root) {
   auto store = open_store(root / "workflow-references");
   auto record = make_record(store, "session", 1);
+  record.source_config_revision = std::string(64, 'a');
   bool ok = expect(SaveStitchingExperiment(store, record).ok(), "save original workflow candidate");
   const auto original = record.workspace;
   record.workflow_id = "workflow-test";
@@ -209,6 +210,16 @@ bool workflow_references(const fs::path& root) {
       restored.ok() && !restored->experiments.front().workflow_active &&
           ResolvedStitchingExperimentWorkspace(restored->experiments.front()).game_directory == selected.game_directory,
       "selection remains inspectable after workflow admission release");
+  auto variant = make_record(store, "later-session", 1);
+  variant.source_config_revision = std::string(64, 'b');
+  ok &= expect(SaveStitchingExperiment(store, variant).ok(), "queue a variant from the updated main config");
+  const auto reuse =
+      ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, variant.workspace, "new-scan");
+  ok &= expect(
+      reuse.ok() && reuse->has_value() && (**reuse).workspace.game_directory == original.game_directory &&
+          ResolvedStitchingExperimentWorkspace(**reuse).game_directory == selected.game_directory &&
+          (**reuse).selection_fingerprint == selected_record.selection_fingerprint,
+      "a new variant must receive retained workflow frames under their original catalog key");
   return ok;
 }
 
@@ -1018,43 +1029,60 @@ bool run(const fs::path& root) {
   // independent copies of the catalog read before taking that lock.
   auto merge_a = make_record(store, "concurrent-a", 1, 4);
   auto merge_b = make_record(store, "concurrent-b", 1, 4);
-  std::array<pid_t, 2> children;
-  for (size_t index = 0; index < children.size(); ++index) {
-    children[index] = ::fork();
-    if (children[index] == 0) {
-      auto record = index == 0 ? merge_a : merge_b;
-      ::_exit(SaveStitchingExperiment(store, record).ok() ? 0 : 1);
+  const auto concurrent_writers = [&](const auto& update, absl::StatusCode expected_conflict) {
+    std::array<pid_t, 2> children;
+    for (size_t index = 0; index < children.size(); ++index) {
+      children[index] = ::fork();
+      if (children[index] == 0) {
+        const absl::Status status = update(index);
+        ::_exit(status.ok() ? 0 : status.code() == expected_conflict ? 1 : 2);
+      }
+      if (children[index] < 0)
+        throw std::runtime_error("Cannot start concurrent catalog fixture");
     }
-    if (children[index] < 0)
-      throw std::runtime_error("Cannot start concurrent catalog fixture");
-  }
-  for (pid_t child : children) {
-    int status = 0;
-    if (::waitpid(child, &status, 0) < 0)
-      throw std::runtime_error("Cannot wait for concurrent catalog fixture");
-    ok &= expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, "concurrent row update succeeds");
-  }
+    int successes = 0;
+    for (pid_t child : children) {
+      int status = 0;
+      if (::waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) > 1)
+        throw std::runtime_error("Unexpected concurrent catalog update failure");
+      if (WEXITSTATUS(status) == 0)
+        ++successes;
+    }
+    return successes;
+  };
+  ok &= expect(
+      concurrent_writers(
+          [&](size_t index) { return SaveStitchingExperiment(store, index == 0 ? merge_a : merge_b); },
+          absl::StatusCode::kOk) == 2,
+      "concurrent inserts for the same count both succeed");
   restored = LoadStitchingExperimentStore(store);
-  ok &= expect(restored.ok() && restored->experiments.size() == 7, "concurrent writers preserve both new records");
-  int successful_reservations = 0;
-  for (size_t index = 0; index < children.size(); ++index) {
-    children[index] = ::fork();
-    if (children[index] == 0) {
-      const auto& record = index == 0 ? merge_a : merge_b;
-      auto result = ReserveStitchingExperimentFrameCount(
-          store, 4, 10 * kPlayerFrameSecond, record.workspace, index == 0 ? "reservation-a" : "reservation-b");
-      ::_exit(result.ok() ? 0 : 1);
-    }
-    if (children[index] < 0)
-      throw std::runtime_error("Cannot start competing reservation fixture");
-  }
-  for (pid_t child : children) {
-    int status = 0;
-    if (::waitpid(child, &status, 0) < 0)
-      throw std::runtime_error("Cannot wait for competing reservation fixture");
-    successful_reservations += WIFEXITED(status) && WEXITSTATUS(status) == 0;
-  }
-  ok &= expect(successful_reservations == 1, "only one process reserves a fresh count");
+  if (!expect(restored.ok() && restored->experiments.size() == 7, "concurrent writers preserve both new records"))
+    return false;
+  const auto same_row = restored->experiments.back();
+  ok &= expect(
+      concurrent_writers(
+          [&](size_t index) {
+            auto update = same_row;
+            update.state = "failed";
+            update.failure = index == 0 ? "first attempt" : "second attempt";
+            return SaveStitchingExperiment(store, update);
+          },
+          absl::StatusCode::kAborted) == 1,
+      "only one concurrent update may advance the same catalog row revision");
+  ok &= expect(
+      concurrent_writers(
+          [&](size_t index) {
+            const auto& record = index == 0 ? merge_a : merge_b;
+            return ReserveStitchingExperimentFrameCount(
+                       store,
+                       4,
+                       10 * kPlayerFrameSecond,
+                       record.workspace,
+                       index == 0 ? "reservation-a" : "reservation-b")
+                .status();
+          },
+          absl::StatusCode::kFailedPrecondition) == 1,
+      "only one process reserves a fresh count");
 
   const auto valid_index = read_file(store.directory / "index.yaml");
   const auto invalid_index = [&](const std::string& contents, const std::string& description) {

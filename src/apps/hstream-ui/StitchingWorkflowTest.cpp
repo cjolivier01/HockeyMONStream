@@ -219,6 +219,47 @@ void plans(const StitchingExperimentStore& store) {
       retained.value("label").toString().startsWith("Set up retained frames (CPU)") &&
           !retained.value("inputs").toObject().contains("catalog_key"),
       "Retained input source acquired new catalog ownership");
+  // A completed sibling can be the published frame source after its original
+  // batch retires. Its catalog key and its adopted result path are different.
+  auto completed = rows;
+  auto& sibling = completed.experiments[2];
+  sibling.state = "complete";
+  sibling.workflow_id = "older-workflow";
+  sibling.selection_fingerprint = "frozen";
+  sibling.result_workspace = sibling.workspace;
+  sibling.result_workspace->root = rows.experiments[1].selection_workspace->root / "other-attempt";
+  sibling.result_workspace->game_directory = sibling.result_workspace->root / sibling.workspace.game_id;
+  auto& variant = completed.experiments[3];
+  variant.selection_owner_workspace_key = "sessions/session/candidate-3";
+  variant.selection_fingerprint.clear();
+  variant.saved_selection_fingerprint.clear();
+  variant.source_config_revision = std::string(64, 'c');
+  variant.workspace.settings.control_points = 500;
+  variant.workspace.settings.control_point_matcher = "akaze-hamming";
+  variant.workspace.settings.control_point_filtering = hm::stitching::ControlPointFiltering{false, true};
+  const auto next = BuildStitchingWorkflowPlan(store, completed, profiles(), "gpu", 3, id);
+  require(next.ok() && next->value("stages").toArray().size() == 4, "Retained sibling should require only one solve");
+  const auto frames = stage(*next, "experiment-create", "candidate-3");
+  const auto copy = stage(*next, "experiment-reuse-selection", "candidate-4");
+  const auto solve = stage(*next, "experiment-run", "candidate-4");
+  require(
+      frames.value("inputs").toObject().value("workspace").toObject().value("game_directory").toString() ==
+              QString::fromStdString(sibling.result_workspace->game_directory.string()) &&
+          copy.value("dependencies").toArray().contains(frames.value("id")) &&
+          solve.value("dependencies").toArray().contains(copy.value("id")),
+      "The variant must reuse the adopted sibling result and keep its own solve");
+  const auto settings = stage(*next, "experiment-create", "candidate-4")
+                            .value("inputs")
+                            .toObject()
+                            .value("workspace")
+                            .toObject()
+                            .value("settings")
+                            .toObject();
+  require(
+      settings.value("control_points") == 500 && settings.value("control_point_matcher") == "akaze-hamming" &&
+          settings.value("control_point_filtering").toObject() ==
+              QJsonObject{{"epipolar_ransac", false}, {"homography_consistency", true}},
+      "Reusing a frame set must preserve the new candidate's AKAZE settings");
   rows.experiments[1].selection_workspace.reset();
   rows.experiments[1].selection_fingerprint.clear();
   rows.experiments[1].baseline_workspace_key = "missing";

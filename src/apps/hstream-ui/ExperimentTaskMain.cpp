@@ -108,8 +108,7 @@ StitchingExperimentWorkspace workspace(const QJsonObject& object, const fs::path
   }
   std::optional<StitchingExperimentWorkspace> retained;
   if (!contained && fs::exists(game / "_hockeymon/stitching-experiments")) {
-    const auto store = take(OpenStitchingExperimentStore(game));
-    const auto catalog = take(LoadStitchingExperimentStore(store));
+    const auto catalog = take(LoadStitchingExperimentStore({game / "_hockeymon/stitching-experiments", game}));
     for (const auto& row : catalog.experiments) {
       if (row.workflow_active)
         continue;
@@ -131,14 +130,18 @@ StitchingExperimentWorkspace workspace(const QJsonObject& object, const fs::path
       config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("") == value.invalidation_id,
       "Workspace generation changed");
   require(object.value("settings").isObject(), "Workspace requires frozen settings");
+  if (retained) {
+    // Older results can inherit camera or filtering fields. Their catalog
+    // descriptor is immutable even if the defaults used by new solves change.
+    require(
+        object.value("settings").toObject() == hm::experiment::settings_json(retained->settings),
+        "Retained workflow settings do not match the exact catalog reference");
+    return *retained;
+  }
   value.settings = hm::experiment::settings(object.value("settings").toObject(), config);
   const auto manual = object.value("settings").toObject().value("manual_control_points").toString();
   if (!manual.isEmpty())
     value.settings.manual_control_points = manual.toStdString();
-  if (retained)
-    require(
-        hm::experiment::settings_json(value.settings) == hm::experiment::settings_json(retained->settings),
-        "Retained workflow settings do not match the exact catalog reference");
   return value;
 }
 void verify_owner(const fs::path& game, const std::string& token, const std::string& workflow = {}) {
@@ -233,7 +236,7 @@ QJsonObject admission_command(const std::string& action, const QJsonObject& requ
         row.selection_fingerprint = fingerprint;
         row.state = "frozen";
         row.failure.clear();
-        check(SaveStitchingExperiment(store, row, true));
+        check(SaveStitchingExperiment(store, row, true, row.saved_selection_fingerprint));
       }
       return {
           {"adopted", true},
@@ -261,7 +264,7 @@ QJsonObject admission_command(const std::string& action, const QJsonObject& requ
           take(ReusableStitchingExperimentSelectionFingerprint(result.game_directory, result.settings));
       row.state = "complete";
       row.failure.clear();
-      check(SaveStitchingExperiment(store, row, !row.selection_fingerprint.empty()));
+      check(SaveStitchingExperiment(store, row, !row.selection_fingerprint.empty(), row.saved_selection_fingerprint));
     } else
       require(row.artifact_generation_id == generation, "Adopted result generation changed");
     return {
