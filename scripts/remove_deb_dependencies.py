@@ -2,7 +2,10 @@
 """Relax dependency constraints in a Debian package.
 
 Two kinds of pin keep an Ubuntu 24.04 artifact from installing on 26.04, and
-both are relaxed by default.
+both are relaxed by default.  Either can be kept: --keep-distribution-pins for
+a package already built for the target release, which carries no foreign tag,
+and --keep-cuda-minor-pins where the host's CUDA repository publishes the
+exact minor toolkit the package names.
 
 Relationship versions carrying Ubuntu 24.04-specific package tags are dropped:
 
@@ -143,11 +146,13 @@ def relax_cuda_minor_pin(alternative):
 
 
 def relax_alternative(alternative, version_regex, relax_cuda_minor_pins):
+    # version_regex is None when the caller keeps distribution pins: a package
+    # built for the target release carries none to drop.
     changed = False
     if relax_cuda_minor_pins:
         alternative, changed = relax_cuda_minor_pin(alternative)
     match = VERSIONED_RELATIONSHIP_RE.match(alternative)
-    if match and version_regex.search(match.group("version")):
+    if version_regex is not None and match and version_regex.search(match.group("version")):
         alternative = f"{match.group('prefix').rstrip()}{match.group('suffix')}"
         changed = True
     return alternative, changed
@@ -234,6 +239,13 @@ def parse_args():
         "Default matches Ubuntu 24.04 package tags.",
     )
     parser.add_argument(
+        "--keep-distribution-pins",
+        action="store_true",
+        help="Leave version relations carrying a distribution tag alone. Use "
+        "for a package built for the target release: it carries no foreign "
+        "tag to drop, and its own pins are the ones that belong there.",
+    )
+    parser.add_argument(
         "--keep-cuda-minor-pins",
         action="store_true",
         help=f"Leave dependencies on a specific CUDA {CUDA_MAJOR}.x minor toolkit "
@@ -252,7 +264,7 @@ def main():
     args = parse_args()
     input_deb = args.input_deb.resolve()
     output_deb = (args.output or default_output_path(input_deb)).resolve()
-    version_regex = re.compile(args.version_regex)
+    version_regex = None if args.keep_distribution_pins else re.compile(args.version_regex)
 
     if not input_deb.is_file():
         print(f"ERROR: input package not found: {input_deb}", file=sys.stderr)

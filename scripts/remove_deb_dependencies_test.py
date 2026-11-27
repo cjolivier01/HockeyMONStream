@@ -12,8 +12,9 @@ except ModuleNotFoundError:
 VERSION_REGEX = re.compile(relaxer.DEFAULT_VERSION_REGEX)
 
 
-def relax(value, relax_cuda_minor_pins=True):
-    return relaxer.relax_relationship_value(value, VERSION_REGEX, relax_cuda_minor_pins)
+def relax(value, relax_cuda_minor_pins=True, version_regex=VERSION_REGEX):
+    # version_regex is None for --keep-distribution-pins.
+    return relaxer.relax_relationship_value(value, version_regex, relax_cuda_minor_pins)
 
 
 class CudaMinorPinTest(unittest.TestCase):
@@ -92,6 +93,38 @@ class Ubuntu24VersionTagTest(unittest.TestCase):
         self.assertEqual(value, "libcudart.so.13, libgbm1")
 
 
+class KeepDistributionPinsTest(unittest.TestCase):
+    """--keep-distribution-pins, for a package built for the target release.
+
+    Such a package carries no foreign tag to drop and its own pins are the
+    ones that belong there.  The CUDA minor pins are a separate matter -- they
+    are about which toolkits NVIDIA's repository publishes -- so they are
+    still rewritten.
+    """
+
+    def test_tagged_relations_are_kept(self):
+        value, changed = relax("libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)", version_regex=None)
+        self.assertEqual(value, "libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)")
+        self.assertFalse(changed)
+
+    def test_cuda_minor_pins_are_still_rewritten(self):
+        value, changed = relax(
+            "cuda-cudart-13-0 | cuda-cudart-13-2, libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)",
+            version_regex=None,
+        )
+        self.assertEqual(value, "libcudart.so.13, libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)")
+        self.assertTrue(changed)
+
+    def test_nothing_is_rewritten_when_both_are_kept(self):
+        value, changed = relax(
+            "cuda-cudart-13-2, libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)",
+            relax_cuda_minor_pins=False,
+            version_regex=None,
+        )
+        self.assertEqual(value, "cuda-cudart-13-2, libgbm1 (>= 23.0.4-0ubuntu1~24.04.1)")
+        self.assertFalse(changed)
+
+
 class ControlFileTest(unittest.TestCase):
     def rewrite(self, text):
         with tempfile.TemporaryDirectory() as root:
@@ -154,6 +187,24 @@ class InstallerParityTest(unittest.TestCase):
         self.assertTrue(entries, "no cuda_virtual table found in install_deb.sh")
         self.assertEqual(dict(entries), relaxer.CUDA_MAJOR_VIRTUAL_PACKAGES)
         self.assertEqual(len(entries), len(relaxer.CUDA_MAJOR_VIRTUAL_PACKAGES))
+
+    def test_awk_guards_the_distribution_pin_removal(self):
+        # The installer takes the same decision as --keep-distribution-pins,
+        # through an awk variable: a package built for the target release
+        # keeps its version pins and still has its CUDA minor pins rewritten.
+        installer = (Path(__file__).resolve().parent / "install_deb.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(
+            installer,
+            r"awk -v keep_distribution_pins=",
+            "install_deb.sh does not pass the switch into awk",
+        )
+        self.assertRegex(
+            installer,
+            r"if \(!keep_distribution_pins\)\n\s*sub\(/",
+            "install_deb.sh drops distribution pins unconditionally",
+        )
 
 
 if __name__ == "__main__":

@@ -95,6 +95,10 @@ else
   # what separates a DeepStream release from a metapackage wearing its name.
   make_deepstream_fixture() {
     local path="$1" package="$2" version="$3" architecture="$4" content="${5:-runtime}"
+    # The release the package was built for, stamped the way DeepStream's
+    # build/package.sh stamps it.  Empty leaves the package untagged, which is
+    # everything NVIDIA publishes.
+    local distribution="${6:-}"
     local root="${fixture_root}/build/$(basename "${path}")"
     mkdir -p "${root}/DEBIAN" "$(dirname "${path}")"
     if [[ "${content}" == runtime ]]; then
@@ -111,6 +115,9 @@ Architecture: ${architecture}
 Maintainer: test <test@example.invalid>
 Description: deploy_test fixture
 CONTROL
+    if [[ -n "${distribution}" ]]; then
+      printf 'X-Built-For-Distribution: %s\n' "${distribution}" >>"${root}/DEBIAN/control"
+    fi
     dpkg-deb --build --root-owner-group "${root}" "${path}" >/dev/null
   }
 
@@ -129,7 +136,7 @@ CONTROL
 
   # Not $(...): the resolver reports through a global, which a subshell loses.
   TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
-    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" \
+    deepstream_artifact_resolve test '' hint '' "${fixture_topdir}/dist" \
     >"${fixture_root}/resolve.log" || fail "resolver rejected a usable artifact"
   resolve_output="$(cat "${fixture_root}/resolve.log")"
   expect_equal "${DEEPSTREAM_ARTIFACT}" "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" \
@@ -140,14 +147,14 @@ CONTROL
     "resolver reports what it picked"
 
   if TOPDIR="${fixture_root}/bare/repo" HOME="${fixture_root}/bare/home" \
-    HSTREAM_DEEPSTREAM_CACHE='' deepstream_artifact_resolve test '' hint \
+    HSTREAM_DEEPSTREAM_CACHE='' deepstream_artifact_resolve test '' hint '' \
     "${fixture_root}/bare/repo/dist" >/dev/null 2>&1; then
     fail "resolver accepted a tree with no usable artifact"
   fi
   # deepstream-9.1 carrying 9.2.0-1 cannot satisfy the dependency a package
   # built against deepstream-9.1 declares, so it is not a usable artifact.
   if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test \
-    "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" hint >/dev/null 2>&1; then
+    "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" hint '' >/dev/null 2>&1; then
     fail "resolver accepted a version outside the release its name claims"
   fi
 
@@ -156,7 +163,7 @@ CONTROL
   make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.2_9.2.0-1_amd64.deb" \
     deepstream-9.2 9.2.0-1 amd64
   TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
-    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" >/dev/null \
+    deepstream_artifact_resolve test '' hint '' "${fixture_topdir}/dist" >/dev/null \
     || fail "resolver rejected a newer DeepStream release"
   expect_equal "${DEEPSTREAM_ARTIFACT_PACKAGE}" deepstream-9.2 "a newer release outranks an older one"
 
@@ -165,7 +172,7 @@ CONTROL
   make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.3_9.3.0-1_amd64.deb" \
     deepstream-9.3 9.3.0-1 amd64 metapackage
   TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
-    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" \
+    deepstream_artifact_resolve test '' hint '' "${fixture_topdir}/dist" \
     >/dev/null 2>"${fixture_root}/resolve-passed-over.log" \
     || fail "resolver gave up instead of passing over a metapackage"
   expect_equal "${DEEPSTREAM_ARTIFACT_PACKAGE}" deepstream-9.2 \
@@ -173,15 +180,75 @@ CONTROL
   grep -qF 'deepstream-9.3 9.3.0-1' "${fixture_root}/resolve-passed-over.log" \
     || fail "the passed-over metapackage was not named"
   if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test \
-    "${fixture_home}/Downloads/deepstream-9.3_9.3.0-1_amd64.deb" hint >/dev/null 2>&1; then
+    "${fixture_home}/Downloads/deepstream-9.3_9.3.0-1_amd64.deb" hint '' >/dev/null 2>&1; then
     fail "resolver accepted a metapackage named explicitly"
   fi
+
+  # A package naming the release it was built for is preferred for a target on
+  # that release and refused for one on another.  The tag lives in the control
+  # file and the filename, never in Version, so none of this changes how dpkg
+  # compares the two builds.
+  native_deb="${fixture_home}/Downloads/deepstream-9.2_9.2.0-1_ubuntu26.04_amd64.deb"
+  make_deepstream_fixture "${native_deb}" deepstream-9.2 9.2.0-1 amd64 runtime ubuntu26.04
+  TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+    deepstream_artifact_resolve test '' hint ubuntu26.04 "${fixture_topdir}/dist" \
+    >"${fixture_root}/resolve-native.log" || fail "resolver rejected a package built for the target"
+  expect_equal "${DEEPSTREAM_ARTIFACT}" "${native_deb}" \
+    "a package built for the target release wins over an untagged one"
+  expect_equal "${DEEPSTREAM_ARTIFACT_DISTRIBUTION}" ubuntu26.04 \
+    "resolver reports the release the artifact was built for"
+  grep -qF '(built for ubuntu26.04)' "${fixture_root}/resolve-native.log" \
+    || fail "the chosen release was not named"
+
+  # The same tree resolved for the other release falls back to the untagged
+  # package, which is the behaviour that predates the tag.
+  TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+    deepstream_artifact_resolve test '' hint ubuntu24.04 "${fixture_topdir}/dist" \
+    >/dev/null 2>"${fixture_root}/resolve-foreign.log" \
+    || fail "resolver gave up instead of falling back to an untagged package"
+  expect_equal "${DEEPSTREAM_ARTIFACT}" \
+    "${fixture_home}/Downloads/deepstream-9.2_9.2.0-1_amd64.deb" \
+    "a package built for another release is passed over"
+  expect_equal "${DEEPSTREAM_ARTIFACT_DISTRIBUTION}" "" \
+    "an untagged artifact reports no release"
+  grep -qF 'built for ubuntu26.04' "${fixture_root}/resolve-foreign.log" \
+    || fail "the passed-over package was not named"
+
+  # Naming it explicitly does not override the mismatch: that package cannot
+  # install on the target, and saying so is more use than building against it.
+  if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test "${native_deb}" hint \
+    ubuntu24.04 >/dev/null 2>"${fixture_root}/resolve-explicit.log"; then
+    fail "resolver accepted a package built for another release"
+  fi
+  grep -qF 'built for another release' "${fixture_root}/resolve-explicit.log" \
+    || fail "the mismatch was not explained"
+  # Still usable where it belongs, and where the caller names no release.
+  TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test "${native_deb}" hint ubuntu26.04 \
+    >/dev/null || fail "resolver refused a package built for the target named explicitly"
+  TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test "${native_deb}" hint '' \
+    >/dev/null || fail "resolver refused a tagged package when no release was named"
+
+  # The control field is authoritative; the filename answers only for a
+  # package that carries no field.
+  expect_equal "$(deepstream_artifact_distribution "${native_deb}")" ubuntu26.04 \
+    "the distribution is read from the control field"
+  renamed_deb="${fixture_root}/renamed_amd64.deb"
+  cp "${native_deb}" "${renamed_deb}"
+  expect_equal "$(deepstream_artifact_distribution "${renamed_deb}")" ubuntu26.04 \
+    "the control field survives a rename"
+  untagged_field_deb="${fixture_home}/Downloads/deepstream-9.2_9.2.2-1_ubuntu26.04_amd64.deb"
+  make_deepstream_fixture "${untagged_field_deb}" deepstream-9.2 9.2.2-1 amd64
+  expect_equal "$(deepstream_artifact_distribution "${untagged_field_deb}")" ubuntu26.04 \
+    "the filename answers for a package with no field"
+  expect_equal "$(deepstream_artifact_distribution \
+    "${fixture_home}/Downloads/deepstream-9.2_9.2.0-1_amd64.deb")" "" \
+    "an untagged package names no release"
 
   # The resolver globs, but nullglob belongs to whoever sourced the library.
   for nullglob_state in u s; do
     shopt -"${nullglob_state}" nullglob
     TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
-      deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" >/dev/null
+      deepstream_artifact_resolve test '' hint '' "${fixture_topdir}/dist" >/dev/null
     if shopt -q nullglob && [[ "${nullglob_state}" == u ]]; then
       fail "resolver left nullglob set"
     fi
@@ -522,8 +589,8 @@ record_desktop_deployment() {
       PATH="${desktop_argv_dir}/bin:${PATH}" bash -c "$*"
     }
     DEPLOY_DEEPSTREAM="$1" \
-      DESKTOP_DEEPSTREAM_DEB=/artifacts/deepstream-9.1_9.1.1-1_amd64.deb \
-      deploy_desktop monster /dist/hstream_1.2.3_amd64.deb /repo/scripts/install_deb.sh >/dev/null
+      deploy_desktop monster /dist/hstream_1.2.3_amd64.deb /repo/scripts/install_deb.sh \
+      /artifacts/deepstream-9.1_9.1.1-1_amd64.deb >/dev/null
   ) || fail "deploy_desktop failed with DEPLOY_DEEPSTREAM=$1"
 }
 
