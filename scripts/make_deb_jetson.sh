@@ -172,6 +172,9 @@ build_packages=(
   python3-yaml
   cmake
   curl
+  libavcodec-dev
+  libavformat-dev
+  libavutil-dev
   libboost-filesystem-dev
   libboost-system-dev
   libexiv2-dev
@@ -183,6 +186,7 @@ build_packages=(
   libopenexr-dev
   libpano13-dev
   libpng-dev
+  libswscale-dev
   libtiff-dev
   hugin-tools
   enblend

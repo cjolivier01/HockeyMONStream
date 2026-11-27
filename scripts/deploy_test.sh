@@ -693,6 +693,343 @@ expect_equal "${installer_rejection}" \
   'ERROR: --hstream-deb and --deepstream-deb are required.' \
   "the installer still requires a DeepStream artifact by default"
 
+# Installing deepstream-9.2 over deepstream-9.1 means taking paths dpkg still
+# records as 9.1's, which it refuses without a Replaces.  NVIDIA's artifacts
+# declare Conflicts and no Replaces at all, so build the transition copy the
+# installer builds and read the fields back off it.
+# The installer is a production script, so its helpers run in a subshell the
+# way the dependency reader above is run.
+installer_call() {
+  HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1090
+    source "$1"
+    shift
+    "$@"
+  ' _ "${SCRIPT_DIR}/install_deb.sh" "$@"
+}
+
+# Which installed releases the copy has to name.  dpkg's current status is
+# what says a release still owns files: a held one and one an interrupted
+# apt already marked for removal both do.
+superseded_with() { installer_call superseded_deepstream_packages "$1"; }
+# Checked assignments: an empty expectation would otherwise be satisfied by
+# the filter failing outright.
+# The expectation is the name count followed by the names, because the
+# production caller reads this output into an array: one blank name would be
+# an element there and would start a transition, but a plain command
+# substitution strips it to the empty string that means no names at all.
+expect_superseded() {
+  local inventory="$1" expected="$2" label="$3"
+  local -a found=()
+  local name summary output_file
+  # Into a file, not process substitution or a command substitution ending in
+  # another command: the first loses the reader's exit status and the second
+  # replaces it, so a reader that failed and said nothing would read as one
+  # that found nothing.  A file also keeps a blank name a blank name.
+  # %b: the fixtures carry dpkg's tab separator as an escape.
+  output_file="$(mktemp)"
+  printf '%b' "${inventory}" | superseded_with deepstream-9.2 >"${output_file}" \
+    || fail "${label}: the filter failed"
+  while IFS= read -r name; do
+    found+=("${name}")
+  done <"${output_file}"
+  rm -f "${output_file}"
+  summary="${#found[@]}"
+  if [[ "${#found[@]}" -gt 0 ]]; then summary+=" ${found[*]}"; fi
+  expect_equal "${summary}" "${expected}" "${label}"
+}
+expect_superseded 'deepstream-9.1:amd64\tii
+deepstream-9.2:amd64\tii
+' '1 deepstream-9.1' "the release being installed is not superseded by itself"
+expect_superseded 'deepstream-9.1:amd64\thi
+' '1 deepstream-9.1' "a held release still owns its files"
+expect_superseded 'deepstream-9.1:amd64\tri
+' '1 deepstream-9.1' "a release marked for removal still owns its files until it is gone"
+expect_superseded 'deepstream-8.0:amd64\trc
+deepstream-9.1:amd64\tpn
+' 0 "a release down to config files or gone entirely owns none"
+expect_superseded 'deepstream-9.1:amd64\tiU
+' '1 deepstream-9.1' "a release left unpacked by an interrupted upgrade owns its files"
+expect_superseded 'deepstream-sample-data\tii
+deepstream-binaries-x86\tii
+' 0 "split packages are left to the artifact's own conflicts"
+
+
+installer_call removal_is_expected deepstream-9.1 hmstream deepstream-9.1 \
+  || fail "a removal this installation asked for was not recognized"
+installer_call removal_is_expected deepstream-9.1:arm64 deepstream-9.1 \
+  || fail "APT's architecture-qualified name was not matched to the bare one"
+installer_call removal_is_expected hmstream:arm64 hmstream deepstream-9.1 \
+  || fail "the package HStream replaced was not matched when APT qualified it"
+if installer_call removal_is_expected deepstream-9.10 deepstream-9.1; then
+  fail "a different package was matched by a shared prefix"
+fi
+if installer_call removal_is_expected hmstream-extras hmstream; then
+  fail "a dependent package was accepted as an expected removal"
+fi
+if installer_call removal_is_expected deepstream-9.1; then
+  fail "a removal was accepted with nothing expected at all"
+fi
+
+
+# zstd is what NVIDIA compresses these artifacts with, and the installer runs
+# tar against the executable rather than dpkg-deb's own library.
+if ! command -v dpkg-deb >/dev/null || ! command -v ar >/dev/null ||
+   ! command -v zstd >/dev/null; then
+  echo "deploy_test: SKIPPING DeepStream transition checks (dpkg-deb, ar or zstd unavailable)" >&2
+else
+  transition_root="$(mktemp -d)"
+  trap 'rm -rf "${transition_root}"' EXIT
+  # dpkg-deb --build refuses a DEBIAN directory it cannot read back, which is
+  # what mkdir gives it under a restrictive umask.
+  umask 022
+
+  # $1 is what the artifact declares before the rewrite, written verbatim so a
+  # case can hand over a folded field or a trailing blank line; the payload
+  # stands in for the gigabyte of DeepStream the copy carries through.
+  make_transition_fixture() {
+    local relationships="$1" path="$2"
+    local root
+    root="${transition_root}/build/$(basename "${path}" .deb)"
+    mkdir -p "${root}/DEBIAN" "${root}/opt/nvidia/deepstream"
+    head -c 4096 /dev/urandom >"${root}/opt/nvidia/deepstream/payload.bin"
+    {
+      printf 'Package: deepstream-9.2\nVersion: 9.2.0-1\nArchitecture: amd64\n'
+      printf 'Maintainer: test <test@example.invalid>\n'
+      printf 'Description: deploy_test fixture\n'
+      [[ -n "${relationships}" ]] && printf '%s\n' "${relationships}"
+    } >"${root}/DEBIAN/control"
+    dpkg-deb -Zzstd --build --root-owner-group "${root}" "${path}" >/dev/null
+  }
+
+  build_transition() { installer_call build_deepstream_transition_deb "$@"; }
+
+  # Exactly what deepstream-9.2_9.2.0-1_amd64.deb declares: a Conflicts to
+  # extend and no Replaces to extend.
+  make_transition_fixture 'Conflicts: libglapi-amber, deepstream-binaries-x86' \
+    "${transition_root}/nvidia.deb"
+  build_transition "${transition_root}/nvidia.deb" "${transition_root}/nvidia-transition.deb" \
+    deepstream-9.1 || fail "the installer could not build a transition artifact"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-binaries-x86, deepstream-9.1" \
+    "the transition copy keeps the artifact's own conflicts and adds the old release"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Replaces)" \
+    "deepstream-9.1" "the transition copy declares a Replaces the artifact does not have"
+  expect_equal "$(dpkg-deb -f "${transition_root}/nvidia-transition.deb" Version)" 9.2.0-1 \
+    "the transition copy is still the artifact it was made from"
+  mkdir "${transition_root}/unpacked"
+  dpkg-deb -x "${transition_root}/nvidia-transition.deb" "${transition_root}/unpacked" \
+    || fail "the transition artifact does not unpack"
+  cmp -s "${transition_root}/unpacked/opt/nvidia/deepstream/payload.bin" \
+    "${transition_root}/build/nvidia/opt/nvidia/deepstream/payload.bin" \
+    || fail "the transition artifact did not carry its data member through unchanged"
+  # Contents alone would still pass if the member had been re-encoded, which
+  # on the real artifact means a gigabyte of work the copy must not do.  Both
+  # members are extracted to files first: ar p exits 0 for a member it does
+  # not have, and cmp cannot tell two empty streams apart.
+  for payload_source in nvidia nvidia-transition; do
+    ar p "${transition_root}/${payload_source}.deb" \
+      "$(ar t "${transition_root}/${payload_source}.deb" | grep '^data[.]tar')" \
+      >"${transition_root}/${payload_source}.data" \
+      || fail "could not read the data member of ${payload_source}.deb"
+    [[ -s "${transition_root}/${payload_source}.data" ]] \
+      || fail "the data member of ${payload_source}.deb is empty"
+  done
+  cmp -s "${transition_root}/nvidia.data" "${transition_root}/nvidia-transition.data" \
+    || fail "the transition artifact re-encoded its data member instead of copying it"
+
+  # An existing field is extended rather than replaced, and more than one
+  # installed release is named in both fields.
+  make_transition_fixture \
+    'Conflicts: libglapi-amber
+Replaces: deepstream-sample-data' "${transition_root}/both.deb"
+  build_transition "${transition_root}/both.deb" "${transition_root}/both-transition.deb" \
+    deepstream-9.1 deepstream-8.0 || fail "the installer could not extend existing relationships"
+  expect_equal "$(dpkg-deb -f "${transition_root}/both-transition.deb" Replaces)" \
+    "deepstream-sample-data, deepstream-9.1, deepstream-8.0" \
+    "an existing Replaces is extended with every installed release"
+  expect_equal "$(dpkg-deb -f "${transition_root}/both-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-9.1, deepstream-8.0" \
+    "an existing Conflicts is extended with every installed release"
+
+  # Neither field present: an artifact that declares nothing still gets both.
+  make_transition_fixture '' "${transition_root}/bare.deb"
+  build_transition "${transition_root}/bare.deb" "${transition_root}/bare-transition.deb" \
+    deepstream-9.1 || fail "the installer could not add both relationships"
+  expect_equal "$(dpkg-deb -f "${transition_root}/bare-transition.deb" Conflicts)" \
+    "deepstream-9.1" "a Conflicts is added to an artifact that declares none"
+  expect_equal "$(dpkg-deb -f "${transition_root}/bare-transition.deb" Replaces)" \
+    "deepstream-9.1" "a Replaces is added to an artifact that declares none"
+
+  # A control file that ends with the paragraph terminator.  An added field
+  # printed after it starts a second paragraph, and dpkg rejects the file for
+  # a missing Package rather than reading the relationship.
+  make_transition_fixture 'Conflicts: libglapi-amber
+' "${transition_root}/terminated.deb"
+  build_transition "${transition_root}/terminated.deb" \
+    "${transition_root}/terminated-transition.deb" deepstream-9.1 \
+    || fail "the installer could not add a field to a terminated paragraph"
+  expect_equal "$(dpkg-deb -f "${transition_root}/terminated-transition.deb" Replaces)" \
+    "deepstream-9.1" "an added field joins the paragraph instead of starting a second one"
+  expect_equal "$(dpkg-deb -f "${transition_root}/terminated-transition.deb" Package)" \
+    "deepstream-9.2" "the paragraph a trailing blank line ends is still the package's"
+
+  # A relationship folded over continuation lines: the list belongs after the
+  # last of them, not after the comma that ends the first.
+  make_transition_fixture 'Conflicts: libglapi-amber,
+ deepstream-binaries-x86' "${transition_root}/folded.deb"
+  build_transition "${transition_root}/folded.deb" "${transition_root}/folded-transition.deb" \
+    deepstream-9.1 || fail "the installer could not extend a folded relationship"
+  expect_equal "$(dpkg-deb -f "${transition_root}/folded-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-binaries-x86, deepstream-9.1" \
+    "a folded Conflicts is extended at its end"
+
+  # dpkg reads a control file that starts with a blank line.  Treating that
+  # line as the end of the stanza puts the added fields in one of their own,
+  # with no Package in it.
+  make_transition_fixture '' "${transition_root}/leading.deb"
+  leading_root="${transition_root}/build/leading"
+  printf '\n%s' "$(cat "${leading_root}/DEBIAN/control")" >"${leading_root}/DEBIAN/control.new"
+  printf '\n' >>"${leading_root}/DEBIAN/control.new"
+  mv "${leading_root}/DEBIAN/control.new" "${leading_root}/DEBIAN/control"
+  dpkg-deb -Zzstd --build --root-owner-group "${leading_root}" \
+    "${transition_root}/leading.deb" >/dev/null
+  build_transition "${transition_root}/leading.deb" \
+    "${transition_root}/leading-transition.deb" deepstream-9.1 \
+    || fail "the installer could not rewrite a control file that starts blank"
+  expect_equal "$(dpkg-deb -f "${transition_root}/leading-transition.deb" Package)" \
+    "deepstream-9.2" "a blank first line does not end the stanza before it starts"
+  expect_equal "$(dpkg-deb -f "${transition_root}/leading-transition.deb" Replaces)" \
+    "deepstream-9.1" "the added field joins the package's own stanza"
+
+  # dpkg tolerates a space before the colon.  Not recognizing the field adds a
+  # second one, and a control file with two Conflicts does not parse.
+  make_transition_fixture 'Conflicts : libglapi-amber' "${transition_root}/spaced.deb"
+  build_transition "${transition_root}/spaced.deb" "${transition_root}/spaced-transition.deb" \
+    deepstream-9.1 || fail "the installer could not extend a spaced field name"
+  expect_equal "$(dpkg-deb -f "${transition_root}/spaced-transition.deb" Conflicts)" \
+    "libglapi-amber, deepstream-9.1" "a space before the colon still names the field"
+
+  # dpkg accepts an empty relationship field when another field follows it.
+  # A comma in front of the list turns it into a list with a hole in it.
+  make_transition_fixture 'Conflicts:
+Section: misc' "${transition_root}/blankfield.deb"
+  build_transition "${transition_root}/blankfield.deb" \
+    "${transition_root}/blankfield-transition.deb" deepstream-9.1 \
+    || fail "the installer could not fill an empty relationship field"
+  expect_equal "$(dpkg-deb -f "${transition_root}/blankfield-transition.deb" Conflicts)" \
+    "deepstream-9.1" "an empty field is filled rather than given a leading comma"
+  expect_equal "$(dpkg-deb -f "${transition_root}/blankfield-transition.deb" Section)" \
+    "misc" "the field after the empty one is left alone"
+
+  # dpkg reads a control file with CRLF endings.  The list belongs in front of
+  # the carriage return; after it, the value carries a CR in the middle.  The
+  # empty field here also makes the CR the only thing on the line, which must
+  # not read as the field already having a value.
+  make_transition_fixture 'Conflicts:
+Section: misc' "${transition_root}/crlf.deb"
+  crlf_root="${transition_root}/build/crlf"
+  sed -i 's/$/\r/' "${crlf_root}/DEBIAN/control"
+  dpkg-deb -Zzstd --build --root-owner-group "${crlf_root}" \
+    "${transition_root}/crlf.deb" >/dev/null
+  build_transition "${transition_root}/crlf.deb" "${transition_root}/crlf-transition.deb" \
+    deepstream-9.1 || fail "the installer could not rewrite a CRLF control file"
+  expect_equal "$(dpkg-deb -f "${transition_root}/crlf-transition.deb" Conflicts)" \
+    "deepstream-9.1" "a CRLF line ending does not land inside the relationship"
+  expect_equal "$(dpkg-deb -f "${transition_root}/crlf-transition.deb" Section)" \
+    "misc" "the rest of a CRLF paragraph is left alone"
+  # On the bytes, because dpkg strips a carriage return wherever it sits and
+  # would read "Conflicts:<CR> deepstream-9.1" the same way.  Other readers of
+  # this control file are not promised to.
+  mkdir "${transition_root}/crlf-control"
+  dpkg-deb -e "${transition_root}/crlf-transition.deb" "${transition_root}/crlf-control"
+  expect_equal "$(grep -a '^Conflicts' "${transition_root}/crlf-control/control" | cat -A)" \
+    'Conflicts: deepstream-9.1^M$' "the line still ends where it ended"
+
+  # dpkg-deb -Znone writes control.tar and data.tar with no suffix after tar.
+  make_transition_fixture 'Conflicts: libglapi-amber' "${transition_root}/plain.deb"
+  dpkg-deb -Znone --build --root-owner-group "${transition_root}/build/plain" \
+    "${transition_root}/plain.deb" >/dev/null
+  build_transition "${transition_root}/plain.deb" "${transition_root}/plain-transition.deb" \
+    deepstream-9.1 || fail "the installer rejected an uncompressed artifact"
+  expect_equal "$(dpkg-deb -f "${transition_root}/plain-transition.deb" Replaces)" \
+    "deepstream-9.1" "an uncompressed control member is rewritten like any other"
+
+  # dpkg-deb --info and -f read the control member alone, so an artifact that
+  # lost its payload would pass every field check the helper makes.
+  cp "${transition_root}/nvidia.deb" "${transition_root}/payloadless.deb"
+  ar d "${transition_root}/payloadless.deb" "$(ar t "${transition_root}/payloadless.deb" \
+    | grep '^data[.]tar[.]')"
+  payloadless_output="$(build_transition "${transition_root}/payloadless.deb" \
+    "${transition_root}/payloadless-transition.deb" deepstream-9.1 2>&1 1>/dev/null)" \
+    && fail "the installer built a transition artifact out of a package with no payload"
+  expect_equal "${payloadless_output}" "ERROR: malformed DeepStream Debian artifact." \
+    "a package with no payload is refused for the reason it is refused"
+  [[ ! -e "${transition_root}/payloadless-transition.deb" ]] \
+    || fail "the refused payloadless transition still left an artifact behind"
+
+  # A source whose payload is shorter than its header promises.  Which layer
+  # refuses it depends on the binutils version; what must hold either way is
+  # that the path the caller hands APT does not become a usable artifact.
+  truncated_source="${transition_root}/truncated.deb"
+  head -c "$(( $(stat -c '%s' "${transition_root}/nvidia.deb") - 16 ))" \
+    "${transition_root}/nvidia.deb" >"${truncated_source}"
+  if build_transition "${truncated_source}" "${transition_root}/truncated-transition.deb" \
+    deepstream-9.1 >/dev/null 2>&1; then
+    fail "the installer built a transition artifact from a truncated package"
+  fi
+  [[ ! -e "${transition_root}/truncated-transition.deb" ]] \
+    || fail "a truncated source still produced an artifact at the name APT is given"
+
+  # With no release to name, the verification has nothing to look for and
+  # would pass an artifact carrying two empty fields.  Assert the diagnostic:
+  # without the guard this fixture fails later anyway, on the empty list it
+  # writes into Conflicts, and the case would pass for the wrong reason.
+  empty_output="$(build_transition "${transition_root}/nvidia.deb" \
+    "${transition_root}/empty-transition.deb" 2>&1 1>/dev/null)" \
+    && fail "the installer built a transition artifact against no release at all"
+  expect_equal "${empty_output}" \
+    "ERROR: no DeepStream release to declare the transition against." \
+    "naming no release is refused before anything is built"
+  [[ ! -e "${transition_root}/empty-transition.deb" ]] \
+    || fail "the refused transition still left an artifact behind"
+
+  # APT may only remove a package when this installation is the reason.  The
+  # artifact's own Conflicts are part of that reason: a host still carrying
+  # the legacy split packages has them removed by the release it installs,
+  # and their names differ by architecture, so they are read off the artifact
+  # rather than listed here a second time.
+  make_transition_fixture 'Conflicts: libglapi-amber, deepstream-binaries-x86 (<< 9.2), deepstream-sample-data' \
+    "${transition_root}/conflicts.deb"
+  # The versioned relation in that fixture is deliberately absent: approving
+  # the name alone would approve removing a version the artifact never
+  # objected to, so the guard refuses it visibly instead.
+  expect_equal "$(installer_call declared_conflicts "${transition_root}/conflicts.deb")" \
+    "libglapi-amber
+deepstream-sample-data" "the unversioned names an artifact declares a conflict with are read off it"
+  bare_conflicts="$(installer_call declared_conflicts "${transition_root}/bare.deb")" \
+    || fail "reading the conflicts of an artifact that declares none failed"
+  expect_equal "${bare_conflicts}" "" "an artifact declaring no conflict names nothing"
+
+  rm -rf "${transition_root}"
+  trap - EXIT
+fi
+
+# //src/libs/media:video_still links -lavformat -lavcodec -lavutil -lswscale by
+# hand, so both package builds have to install their headers.  The Jetson list
+# carried none of the four and the build died on libswscale/swscale.h, while
+# the desktop image only had them through a dependency of something else.
+dockerfile="${SCRIPT_DIR}/../env/debian-package/Dockerfile"
+if [[ ! -f "${dockerfile}" ]]; then
+  fail "the desktop package builder Dockerfile is not readable from the test"
+fi
+for ffmpeg_dev in libavcodec-dev libavformat-dev libavutil-dev libswscale-dev; do
+  grep -q -- "${ffmpeg_dev}" "${dockerfile}" \
+    || fail "the desktop package builder does not install ${ffmpeg_dev}"
+  grep -q -- "${ffmpeg_dev}" "${SCRIPT_DIR}/make_deb_jetson.sh" \
+    || fail "the Jetson package build does not install ${ffmpeg_dev}"
+done
+
 for script in deploy.sh make_deb.sh make_deb_jetson.sh; do
   if output="$(JETSON_QT=invalid NODES=stubby bash "${SCRIPT_DIR}/${script}" 2>&1)"; then
     fail "${script} accepted an invalid JETSON_QT option"
