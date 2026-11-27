@@ -56,9 +56,9 @@ void require(bool condition, const char* message) {
     throw std::runtime_error(message);
 }
 void write(const QString& path, const QByteArray& bytes) {
-  QFile file(path);
+  QSaveFile file(path);
   require(file.open(QIODevice::WriteOnly), "Cannot open fixture file");
-  require(file.write(bytes) == bytes.size(), "Cannot write fixture file");
+  require(file.write(bytes) == bytes.size() && file.commit(), "Cannot publish fixture file");
 }
 QJsonObject read(const QString& path) {
   QFile file(path);
@@ -246,7 +246,7 @@ elif operation=='submit':
   node['attempts']=[dict(id='attempt-current',epoch=0,state='running',details={'scheduler_id':'31','host':'compute-a','reason':'Resources'})] if index==0 else []
   nodes.append(node)
  value=dict(workflow_id=plan['workflow_id'],state='running',owner_released=False,epoch=0,revision=1,nodes=nodes,limits=plan['limits'])
- (root/'state.json').write_text(json.dumps(value))
+ temporary=root/('state-'+str(os.getpid())+'.json'); temporary.write_text(json.dumps(value)); temporary.replace(root/'state.json')
  mode=(root/'submit-response-mode').read_text() if (root/'submit-response-mode').exists() else ''
  if mode=='timeout': time.sleep(60)
  if mode=='empty': raise SystemExit(0)
@@ -285,7 +285,7 @@ elif operation in ('cancel','retry'):
    if node['id'] not in ids: continue
    node['state']='running'
    node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
- (root/'state.json').write_text(json.dumps(value))
+ temporary=root/('state-'+str(os.getpid())+'.json'); temporary.write_text(json.dumps(value)); temporary.replace(root/'state.json')
  if operation=='cancel' and (root/'lose-cancel-response').exists():
   print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
  if operation=='retry' and (root/'lose-retry-response').exists():
@@ -1338,6 +1338,14 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       color("Decoder detail") != color("Job started") && color("WARNING: frame late") != color("Decoder detail") &&
           color("libpng error") != color("WARNING: frame late") && color("**PERF:") != color("Job started"),
       "Stage log lost its stream or severity colors");
+  output += "\x1b[34mFirst ANSI line\nSecond ANSI line";
+  write(root + "/log.txt", output);
+  require(wait([&] { return log->toPlainText().endsWith("Second ANSI line"); }), "Multiline ANSI did not arrive");
+  const QColor blue = log->palette().color(QPalette::Base).lightness() < 128 ? QColor("#81a1c1") : QColor("#1d4ed8");
+  require(color("First ANSI line") == blue && color("Second ANSI line") == blue, "Multiline color was lost");
+  update_log(" continued\nThird ANSI line");
+  require(color("continued") == blue && color("Third ANSI line") == blue, "Appended log lost its active color");
+  output += "\x1b[0m\n";
   const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
   if (!log_screenshot.isEmpty())
     require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");

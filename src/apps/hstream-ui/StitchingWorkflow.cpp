@@ -1276,7 +1276,10 @@ struct StitchingWorkflow::Impl {
   }
   void setLogContents(const QString& text, const QString& source) {
     const bool dark = log_view->palette().color(QPalette::Base).lightness() < 128;
-    log_view->setLogText(text, source, [dark](const QString& line) { return hm::ui::stage_log_line_html(line, dark); });
+    log_view->setLogText(
+        text, source, [dark, style = hm::ui::AnsiTextStyle{}](const QString& line, bool visible) mutable {
+          return hm::ui::stage_log_line_html(line, dark, style, visible);
+        });
   }
   void loadLog() {
     if (!log_view)

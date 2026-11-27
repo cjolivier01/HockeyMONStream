@@ -1,7 +1,7 @@
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 
 #include <QtCore/QJsonDocument>
-#include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -48,34 +48,41 @@ class JobOutput {
   void stdoutReady(bool finished = false) {
     static const QByteArray marker("HSTREAM_");
     while (process_.bytesAvailable()) {
-      const auto prefix = process_.peek(marker.size());
-      const bool record = spill_ || (stdout_start_ && (prefix.startsWith(marker) || marker.startsWith(prefix)));
-      const bool complete = !record || finished || process_.canReadLine();
-      if (record && !complete && process_.bytesAvailable() <= kBlock)
-        return;
-      const QByteArray part = process_.readLine(kBlock);
-      if (record && (!complete || spill_ || (!part.endsWith('\n') && process_.bytesAvailable()))) {
-        // Large graphs can cross pipe reads. Spill just this unfinished record,
-        // keeping live diagnostics flowing without buffering the job in memory.
-        if (!spill_)
-          spill_.reset(std::tmpfile());
-        if (!spill_ || std::fwrite(part.constData(), 1, part.size(), spill_.get()) != size_t(part.size())) {
-          captureError();
+      if (stdout_start_) {
+        const auto prefix = process_.peek(marker.size());
+        if (!finished && prefix.size() < marker.size() && marker.startsWith(prefix))
           return;
-        }
-        if (!part.endsWith('\n') && !(finished && !process_.bytesAvailable()))
-          continue;
-        flushRecord();
+        record_ = prefix.startsWith(marker);
+      }
+      const QByteArray part = process_.readLine(kBlock);
+      stdout_start_ = part.endsWith('\n');
+      if (record_ && pending_.size() + part.size() > kMaxRecord) {
+        endStderrFragment();
+        std::fputs(
+            "[stderr] WARNING: Native stdout record exceeds the 8 MiB log segment; displaying its text in chunks.\n",
+            stderr);
+        std::fflush(stderr);
+        writeChunks(pending_);
+        pending_.clear();
+        oversized_ = true;
+        record_ = false;
+      }
+      if (oversized_) {
+        writeChunks(part);
+        oversized_ = !stdout_start_;
+      } else if (record_) {
+        pending_.append(part);
+        if (stdout_start_)
+          flushRecord();
       } else {
         endStderrFragment();
         std::fwrite(part.constData(), 1, part.size(), stdout);
+        visible_stdout_fragment_ = !stdout_start_;
       }
-      stdout_start_ = part.endsWith('\n');
-      visible_stdout_fragment_ = !stdout_start_;
-      std::fflush(stdout);
     }
-    if (finished && spill_)
+    if (finished && !pending_.isEmpty())
       flushRecord();
+    std::fflush(stdout);
   }
 
   void stderrReady() {
@@ -105,29 +112,34 @@ class JobOutput {
   }
   void flushRecord() {
     endStderrFragment();
-    std::array<char, kBlock> buffer;
-    if (std::fseek(spill_.get(), 0, SEEK_SET) != 0) {
-      captureError();
-      return;
-    }
-    while (const auto size = std::fread(buffer.data(), 1, buffer.size(), spill_.get()))
-      std::fwrite(buffer.data(), 1, size, stdout);
-    if (std::ferror(spill_.get()))
-      captureError();
-    spill_.reset();
-    std::fflush(stdout);
+    std::fwrite(pending_.constData(), 1, pending_.size(), stdout);
+    visible_stdout_fragment_ = !pending_.endsWith('\n');
+    pending_.clear();
   }
-  void captureError() {
-    std::fputs("\n[stderr] ERROR: Cannot retain native protocol record in job output\n", stderr);
-    process_.kill();
+
+  void writeChunks(const QByteArray& text) {
+    // The complete record cannot fit in one retained log segment. Forward every
+    // byte as diagnostic text, without advertising a partial protocol record.
+    endStderrFragment();
+    for (qsizetype offset = 0; offset < text.size(); offset += kBlock) {
+      const auto count = std::min<qsizetype>(kBlock, text.size() - offset);
+      std::fputs("[stdout] ", stdout);
+      std::fwrite(text.constData() + offset, 1, count, stdout);
+      if (text.at(offset + count - 1) != '\n')
+        std::fputc('\n', stdout);
+    }
+    visible_stdout_fragment_ = false;
   }
 
   static constexpr int kBlock = 64 * 1024;
+  static constexpr int kMaxRecord = 8 * 1024 * 1024; // Standalone worker's LOG_SEGMENT_BYTES.
   QProcess& process_;
   bool stdout_start_ = true;
   bool visible_stdout_fragment_ = false;
   bool stderr_start_ = true;
-  std::unique_ptr<FILE, decltype(&std::fclose)> spill_{nullptr, &std::fclose};
+  bool record_ = false;
+  bool oversized_ = false;
+  QByteArray pending_;
 };
 } // namespace
 

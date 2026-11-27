@@ -30,7 +30,7 @@ class LogTextEdit : public QPlainTextEdit {
     preserveViewport(edit, reset);
   }
 
-  using FormatLine = std::function<QString(const QString&)>;
+  using FormatLine = std::function<QString(const QString&, bool)>;
   void setLogText(QString text, const QString& source, const FormatLine& format = {}) {
     text.replace("\r\n", "\n");
     text.replace('\r', '\n');
@@ -38,12 +38,18 @@ class LogTextEdit : public QPlainTextEdit {
     source_ = source;
     // The document normalizes text and may trim leading blocks. Compare the
     // supplied snapshots so neither operation turns an unchanged poll into a reset.
-    if (!reset && snapshot_ && text == *snapshot_)
+    const bool dark = format && palette().color(QPalette::Base).lightness() < 128;
+    const bool reformat = dark != formatted_dark_ || bool(format) != bool(last_line_format_);
+    if (!format)
+      last_line_format_ = {};
+    formatted_dark_ = dark;
+    if (!reset && !reformat && snapshot_ && text == *snapshot_)
       return;
-    const qsizetype prefix = !reset && snapshot_ && text.startsWith(*snapshot_) ? snapshot_->size() : -1;
+    const qsizetype prefix = !reset && !reformat && snapshot_ && text.startsWith(*snapshot_) ? snapshot_->size() : -1;
     editLog(
         [&] {
           if (format) {
+            auto renderer = prefix >= 0 ? last_line_format_ : format;
             QTextCursor cursor(document());
             qsizetype start = 0;
             if (prefix >= 0) {
@@ -63,10 +69,13 @@ class LogTextEdit : public QPlainTextEdit {
               for (int block = 1; block < maximumBlockCount(); ++block)
                 start = text.lastIndexOf('\n', start - 1);
               ++start;
+              renderer(text.left(start), false);
             }
             for (;;) {
               const auto end = text.indexOf('\n', start);
-              cursor.insertHtml(format(text.mid(start, end < 0 ? -1 : end - start)));
+              if (end < 0)
+                last_line_format_ = renderer;
+              cursor.insertHtml(renderer(text.mid(start, end < 0 ? -1 : end - start), true));
               if (end < 0)
                 break;
               cursor.insertBlock();
@@ -123,5 +132,7 @@ class LogTextEdit : public QPlainTextEdit {
   bool follows_tail_{true};
   bool updating_{false};
   QString source_;
+  FormatLine last_line_format_;
+  bool formatted_dark_ = false;
   std::optional<QString> snapshot_;
 };

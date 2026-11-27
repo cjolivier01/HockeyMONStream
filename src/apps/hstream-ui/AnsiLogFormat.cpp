@@ -6,14 +6,6 @@
 namespace hm::ui {
 namespace {
 
-struct AnsiTextStyle {
-  // Empty means "whatever the log widget's palette uses", so log text stays
-  // readable on a light desktop theme as well as a dark one.
-  QString foreground;
-  bool bold = false;
-  bool dim = false;
-};
-
 // The runtime log paints on the desktop theme's own text background, so the
 // ANSI palette has to come in two contrast variants.
 QString ansi_color(int code, bool dark_background) {
@@ -172,27 +164,8 @@ LogSeverity classify_log_message(const QString& message, bool stderr_output) {
   return stderr_output ? LogSeverity::kDetail : LogSeverity::kInfo;
 }
 
-} // namespace
-
-QString log_message_color(const QString& text, bool stderr_output, bool dark_background) {
-  return severity_color(classify_log_message(text, stderr_output), dark_background);
-}
-
-QString stage_log_line_html(const QString& line, bool dark_background) {
-  const bool stderr_output = line.startsWith("[stderr] ");
-  const QString message = stderr_output ? line.mid(9) : line;
-  const auto severity = classify_log_message(message, stderr_output);
-  QString color = severity_color(severity, dark_background);
-  if ((severity == LogSeverity::kInfo || severity == LogSeverity::kDetail) && message.trimmed().startsWith("**PERF:"))
-    color = ansi_color(36, dark_background);
-  const QString body = ansi_to_html(line, dark_background);
-  return "<span style=\"white-space:pre-wrap" + (color.isEmpty() ? QString() : ";color:" + color) + "\">" + body +
-      "</span>";
-}
-
-QString ansi_to_html(const QString& text, bool dark_background) {
+QString format_ansi(const QString& text, bool dark_background, AnsiTextStyle& style, bool visible) {
   QString html;
-  AnsiTextStyle style;
   bool span_open = false;
   auto open_span = [&]() {
     if (!span_open) {
@@ -223,12 +196,41 @@ QString ansi_to_html(const QString& text, bool dark_background) {
       }
     }
 
-    open_span();
-    html += QString(text[i]).toHtmlEscaped();
-    ++i;
+    const auto next = text.indexOf(QChar(0x1b), i + 1);
+    const auto count = (next < 0 ? text.size() : next) - i;
+    if (visible) {
+      open_span();
+      html += text.mid(i, count).toHtmlEscaped();
+    }
+    i += count;
   }
   close_span();
   return html;
+}
+
+} // namespace
+
+QString log_message_color(const QString& text, bool stderr_output, bool dark_background) {
+  return severity_color(classify_log_message(text, stderr_output), dark_background);
+}
+
+QString stage_log_line_html(const QString& line, bool dark_background, AnsiTextStyle& style, bool visible) {
+  const QString body = format_ansi(line, dark_background, style, visible);
+  if (!visible)
+    return {};
+  const bool stderr_output = line.startsWith("[stderr] ");
+  const QString message = stderr_output ? line.mid(9) : line;
+  const auto severity = classify_log_message(message, stderr_output);
+  QString color = severity_color(severity, dark_background);
+  if ((severity == LogSeverity::kInfo || severity == LogSeverity::kDetail) && message.trimmed().startsWith("**PERF:"))
+    color = ansi_color(36, dark_background);
+  return "<span style=\"white-space:pre-wrap" + (color.isEmpty() ? QString() : ";color:" + color) + "\">" + body +
+      "</span>";
+}
+
+QString ansi_to_html(const QString& text, bool dark_background) {
+  AnsiTextStyle style;
+  return format_ansi(text, dark_background, style, true);
 }
 
 } // namespace hm::ui
