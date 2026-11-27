@@ -1079,9 +1079,30 @@ apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 # also provides a minor-independent virtual package, which is the one stable
 # way to depend on the major alone.  The virtual name is not derivable from the
 # binary name -- libcufft-13-3 provides libcufft.so.12 -- so it is a table.
+# The release a DeepStream artifact was built for (ubuntu26.04), or nothing
+# when it does not say.  This installer is uploaded on its own, so it reads the
+# tag itself rather than sourcing scripts/deepstream_artifact.sh, which does
+# the same for the build side.  The control field survives a rename; the
+# filename is the fallback for a package tagged by hand.
+deepstream_deb_distribution() {
+  local deb="$1" distribution name
+  distribution="$(dpkg-deb -f "${deb}" X-Built-For-Distribution 2>/dev/null || true)"
+  distribution="${distribution//[[:space:]]/}"
+  if [[ -z "${distribution}" ]]; then
+    name="$(basename "${deb}")"
+    if [[ "${name}" =~ _((ubuntu|debian)[0-9]+(\.[0-9]+)*)_[A-Za-z0-9][A-Za-z0-9-]*\.deb$ ]]; then
+      distribution="${BASH_REMATCH[1]}"
+    fi
+  fi
+  printf '%s' "${distribution}"
+}
+
 relax_deepstream_dependency_pins() {
   local input_deb="$1"
   local output_deb="$2"
+  # 1 for a package built for this release: it carries no foreign tag to drop,
+  # and its own version pins are the ones that belong there.
+  local keep_distribution_pins="${3:-0}"
   local package_root
   package_root="$(dirname "${output_deb}")/package"
   mkdir -p "${package_root}"
@@ -1090,7 +1111,7 @@ relax_deepstream_dependency_pins() {
     echo "ERROR: DeepStream Debian artifact has no control file." >&2
     exit 1
   fi
-  awk '
+  awk -v keep_distribution_pins="${keep_distribution_pins}" '
     BEGIN {
       cuda_virtual["cuda-cudart"] = "libcudart.so.13"
       cuda_virtual["cuda-cudart-dev"] = "libcudart.so.13-dev"
@@ -1144,7 +1165,8 @@ relax_deepstream_dependency_pins() {
       alternative = name arch rest
       # Mirrors DEFAULT_VERSION_REGEX: the 24.04 has to start the version or
       # follow a separator, so 1.24.04x and 124.04 are left alone.
-      sub(/[ \t]*\((<<|<=|=|>=|>>)[ \t]*(([^)]*[~+.:_-])?24[.]04([~+.:_-][^)]*)?|[^)]*ubuntu[0-9]*[~+.:_-]?24[.]04[^)]*)\)/, "", alternative)
+      if (!keep_distribution_pins)
+        sub(/[ \t]*\((<<|<=|=|>=|>>)[ \t]*(([^)]*[~+.:_-])?24[.]04([~+.:_-][^)]*)?|[^)]*ubuntu[0-9]*[~+.:_-]?24[.]04[^)]*)\)/, "", alternative)
       gsub(/^[ \t]+|[ \t]+$/, "", alternative)
       return alternative
     }
@@ -1210,8 +1232,18 @@ relax_deepstream_dependency_pins() {
 if [[ "${UBUNTU_RELEASE}" == "26.04" && "${NO_DEEPSTREAM}" -eq 0 ]]; then
   relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
   relaxed_deepstream_deb="${relaxed_deepstream_dir}/${DEEPSTREAM_PACKAGE}-ubuntu26-relaxed.deb"
-  echo "Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
-  relax_deepstream_dependency_pins "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}"
+  # A package built for this release keeps its own version pins; the CUDA
+  # minor pins are rewritten either way, because which minor toolkits are
+  # published is a property of the host's CUDA repository, not of Ubuntu.
+  keep_distribution_pins=0
+  if [[ "$(deepstream_deb_distribution "${DEEPSTREAM_DEB}")" == "ubuntu${UBUNTU_RELEASE}" ]]; then
+    keep_distribution_pins=1
+    echo "DeepStream is built for Ubuntu ${UBUNTU_RELEASE}; relaxing CUDA minor-toolkit pins only..."
+  else
+    echo "Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
+  fi
+  relax_deepstream_dependency_pins "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}" \
+    "${keep_distribution_pins}"
   DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
 fi
 

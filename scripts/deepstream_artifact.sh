@@ -12,6 +12,17 @@
 # both: the release first, then the version within it.  Nothing here is pinned
 # to one release; drop a newer artifact in and the build follows it.
 #
+# A package may also name the Ubuntu release it was built for, in
+# X-Built-For-Distribution and in its filename
+# (deepstream-9.2_9.2.0-1_ubuntu26.04_amd64.deb).  Such a package is built
+# against that release's own GStreamer, mesa and CUDA libraries, so it is
+# preferred for a target that matches and refused for one that does not.  The
+# distribution is deliberately absent from Version -- dpkg compares versions
+# and must not rank one Ubuntu release against another -- which is why it is
+# read from the control field rather than from dpkg's version ordering.
+# Untagged packages, which is everything NVIDIA publishes, keep working
+# exactly as before.
+#
 # Source this file; it defines functions and changes no shell options.  The
 # caller must have TOPDIR set to the repository root.
 
@@ -25,6 +36,11 @@ DEEPSTREAM_ARTIFACT=""
 DEEPSTREAM_ARTIFACT_PACKAGE=""
 # shellcheck disable=SC2034 # Read by the scripts that source this file.
 DEEPSTREAM_ARTIFACT_VERSION=""
+# The release the selected artifact was built for (ubuntu26.04), empty when it
+# does not say.  A caller relaxes an untagged package onto its target and
+# leaves a matching one alone.
+# shellcheck disable=SC2034 # Read by the scripts that source this file.
+DEEPSTREAM_ARTIFACT_DISTRIBUTION=""
 
 deepstream_version_supported() {
   local version="$1"
@@ -70,6 +86,39 @@ deepstream_dependency_bounds() {
   else
     printf '%s %s.0-1 %s~\n' "${package}" "${release}" "$((major + 1))"
   fi
+}
+
+# The Ubuntu release a DeepStream artifact was built for (ubuntu26.04), or
+# nothing when it does not say.  The control field is authoritative because it
+# survives a rename; the filename is read only when the field is absent, which
+# covers a package tagged by hand.  dpkg carries user-defined fields through
+# untouched, so reading one costs no more than reading Package or Version.
+deepstream_artifact_distribution() {
+  local candidate="$1" distribution name
+  distribution="$(dpkg-deb -f "${candidate}" X-Built-For-Distribution 2>/dev/null || true)"
+  distribution="${distribution//[[:space:]]/}"
+  if [[ -z "${distribution}" ]]; then
+    name="$(basename "${candidate}")"
+    if [[ "${name}" =~ _((ubuntu|debian)[0-9]+(\.[0-9]+)*)_[A-Za-z0-9][A-Za-z0-9-]*\.deb$ ]]; then
+      distribution="${BASH_REMATCH[1]}"
+    fi
+  fi
+  printf '%s' "${distribution}"
+}
+
+# Order two candidates, best first.  A package built for the target release
+# wins outright: it was linked against that release's libraries, where an
+# untagged package only happens to install there, and the point of publishing
+# a per-release package is to stop guessing.  Between two equally native --
+# or two equally untagged -- candidates the newest wins as it always has.
+deepstream_candidate_preferred() {
+  local native="$1" release="$2" version="$3"
+  local other_native="$4" other_release="$5" other_version="$6"
+  if [[ "${native}" != "${other_native}" ]]; then
+    [[ "${native}" -eq 1 ]]
+    return
+  fi
+  deepstream_identity_newer "${release}" "${version}" "${other_release}" "${other_version}"
 }
 
 # Order two DeepStream identities, newest first.  Both halves go through dpkg,
@@ -156,21 +205,25 @@ deepstream_artifact_search_dirs() {
 #   $1   log prefix for the progress line ("deploy", "make_deb_docker")
 #   $2   artifact the caller was given, or "" to search
 #   $3   example invocation printed when nothing is found
-#   $4+  extra directories to search
-# On failure, explains where it looked and returns non-zero.  The newest
-# artifact wins, so an old download left in ~/Downloads does not shadow a fresh
-# one, and a new release does not need a code change to be picked up.
+#   $4   release being built for ("ubuntu26.04"), or "" to accept any
+#   $5+  extra directories to search
+# On failure, explains where it looked and returns non-zero.  A package built
+# for the target release wins; otherwise the newest wins, so an old download
+# left in ~/Downloads does not shadow a fresh one, and a new release does not
+# need a code change to be picked up.
 deepstream_artifact_resolve() {
-  local log_prefix="$1" requested="$2" hint="$3"
-  shift 3
-  local candidate package version release search_dir
+  local log_prefix="$1" requested="$2" hint="$3" target_distribution="$4"
+  shift 4
+  local candidate package version release search_dir distribution native
   local selected_candidate="" selected_package="" selected_version="" selected_release=""
-  local -a candidates=() search_dirs=()
+  local selected_distribution=""
+  local -a candidates=() search_dirs=() foreign=()
   local nullglob_was_set=0
 
   DEEPSTREAM_ARTIFACT=""
   DEEPSTREAM_ARTIFACT_PACKAGE=""
   DEEPSTREAM_ARTIFACT_VERSION=""
+  DEEPSTREAM_ARTIFACT_DISTRIBUTION=""
   if [[ -n "${requested}" ]]; then
     candidates+=("${requested}")
   else
@@ -189,6 +242,7 @@ deepstream_artifact_resolve() {
   # that actually carries DeepStream.  Content is checked in that order rather
   # than up front so the usual case reads one archive, not every archive.
   local -a ranked_releases=() ranked_versions=() ranked_packages=() ranked_paths=()
+  local -a ranked_distributions=() ranked_natives=()
   for candidate in "${candidates[@]}"; do
     [[ -f "${candidate}" ]] || continue
     package="$(dpkg-deb -f "${candidate}" Package 2>/dev/null || true)"
@@ -199,19 +253,41 @@ deepstream_artifact_resolve() {
     version="$(dpkg-deb -f "${candidate}" Version 2>/dev/null || true)"
     deepstream_version_supported "${version}" || continue
     deepstream_version_matches_release "${package}" "${version}" || continue
+    # A package built for another release is refused rather than ranked last:
+    # it was linked against that release's libraries, and installing it here
+    # is the failure this tag exists to prevent.  A package that names no
+    # release is accepted as it always was.
+    distribution="$(deepstream_artifact_distribution "${candidate}")"
+    native=0
+    if [[ -n "${target_distribution}" && -n "${distribution}" ]]; then
+      if [[ "${distribution}" != "${target_distribution}" ]]; then
+        foreign+=("${package} ${version} built for ${distribution} (${candidate})")
+        continue
+      fi
+      native=1
+    fi
     ranked_releases+=("${release}")
     ranked_versions+=("${version}")
     ranked_packages+=("${package}")
     ranked_paths+=("${candidate}")
+    ranked_distributions+=("${distribution}")
+    ranked_natives+=("${native}")
   done
+
+  if [[ "${#foreign[@]}" -gt 0 ]]; then
+    printf '[%s] Passed over, built for another release than %s:\n' \
+      "${log_prefix}" "${target_distribution}" >&2
+    printf '  %s\n' "${foreign[@]}" >&2
+  fi
 
   local index best
   local -a rejected=()
   while [[ "${#ranked_paths[@]}" -gt 0 ]]; do
     best=0
     for index in "${!ranked_paths[@]}"; do
-      if deepstream_identity_newer "${ranked_releases[index]}" "${ranked_versions[index]}" \
-        "${ranked_releases[best]}" "${ranked_versions[best]}"; then
+      if deepstream_candidate_preferred \
+        "${ranked_natives[index]}" "${ranked_releases[index]}" "${ranked_versions[index]}" \
+        "${ranked_natives[best]}" "${ranked_releases[best]}" "${ranked_versions[best]}"; then
         best="${index}"
       fi
     done
@@ -220,14 +296,18 @@ deepstream_artifact_resolve() {
       selected_package="${ranked_packages[best]}"
       selected_version="${ranked_versions[best]}"
       selected_release="${ranked_releases[best]}"
+      selected_distribution="${ranked_distributions[best]}"
       break
     fi
     rejected+=("${ranked_packages[best]} ${ranked_versions[best]} (${ranked_paths[best]})")
-    unset 'ranked_releases[best]' 'ranked_versions[best]' 'ranked_packages[best]' 'ranked_paths[best]'
+    unset 'ranked_releases[best]' 'ranked_versions[best]' 'ranked_packages[best]' \
+      'ranked_paths[best]' 'ranked_distributions[best]' 'ranked_natives[best]'
     ranked_releases=("${ranked_releases[@]}")
     ranked_versions=("${ranked_versions[@]}")
     ranked_packages=("${ranked_packages[@]}")
     ranked_paths=("${ranked_paths[@]}")
+    ranked_distributions=("${ranked_distributions[@]}")
+    ranked_natives=("${ranked_natives[@]}")
   done
 
   if [[ "${#rejected[@]}" -gt 0 ]]; then
@@ -241,12 +321,25 @@ deepstream_artifact_resolve() {
     DEEPSTREAM_ARTIFACT_PACKAGE="${selected_package}"
     # shellcheck disable=SC2034 # Read by the scripts that source this file.
     DEEPSTREAM_ARTIFACT_VERSION="${selected_version}"
-    printf '[%s] Using %s %s from %s\n' \
-      "${log_prefix}" "${selected_package}" "${selected_version}" "${DEEPSTREAM_ARTIFACT}"
+    # shellcheck disable=SC2034 # Read by the scripts that source this file.
+    DEEPSTREAM_ARTIFACT_DISTRIBUTION="${selected_distribution}"
+    # The tag is named only when there is one, so the usual untagged line
+    # reads exactly as it did before.
+    printf '[%s] Using %s %s%s from %s\n' \
+      "${log_prefix}" "${selected_package}" "${selected_version}" \
+      "${selected_distribution:+ (built for ${selected_distribution})}" \
+      "${DEEPSTREAM_ARTIFACT}"
     return 0
   fi
 
   if [[ -n "${requested}" ]]; then
+    if [[ "${#foreign[@]}" -gt 0 ]]; then
+      printf 'ERROR: this DeepStream package is built for another release than %s: %s\n' \
+        "${target_distribution}" "${requested}" >&2
+      printf 'Point at the %s package, or at one that names no release.\n' \
+        "${target_distribution}" >&2
+      return 1
+    fi
     printf 'ERROR: not a usable DeepStream amd64 package: %s\n' "${requested}" >&2
     printf 'Expected a deepstream-RELEASE package, architecture amd64, version >= %s,\n' \
       "${DEEPSTREAM_MIN_VERSION}" >&2
@@ -255,7 +348,8 @@ deepstream_artifact_resolve() {
     return 1
   fi
 
-  printf 'ERROR: no DeepStream amd64 artifact found.\n' >&2
+  printf 'ERROR: no DeepStream amd64 artifact found%s.\n' \
+    "${target_distribution:+ for ${target_distribution}}" >&2
   printf 'Searched for deepstream-*_*_amd64.deb in:\n' >&2
   for search_dir in "${search_dirs[@]}"; do
     if [[ -d "${search_dir}" ]]; then

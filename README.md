@@ -233,6 +233,17 @@ These targets find the newest supported DeepStream 9.1 amd64 download in
 to select one explicitly, or `HSTREAM_DEEPSTREAM_CACHE=/path/to/downloads` to
 add a search directory. The NVIDIA download must already exist locally.
 
+A DeepStream package may name the Ubuntu release it was built for, in its
+`X-Built-For-Distribution` control field and in its filename
+(`deepstream-9.2_9.2.0-1_ubuntu26.04_amd64.deb`, as produced by the DeepStream
+repository's `build/package.sh`). Such a package is preferred for a target on
+that release and refused for a target on another, including when it is named
+explicitly — it is linked against that release's own libraries. Packages that
+name no release, which is everything NVIDIA publishes, are selected exactly as
+before. The release is deliberately absent from the version, so
+`dpkg --compare-versions` never ranks one Ubuntu release against another, and
+a 24.04 and a 26.04 build of the same DeepStream compare equal.
+
 Outputs are named `deepstream-9.1_<version>_amd64.ubuntu24.04.deb` and
 `deepstream-9.1_<version>_amd64.ubuntu26.04.deb`, under `dist/ubuntu24.04/` and
 `dist/ubuntu26.04/` respectively. Override the directory with `DEB_OUTPUT_DIR`.
@@ -245,6 +256,12 @@ dependency adjustments as `make deb-ubuntu26`: remove Ubuntu 24.04-specific
 version pins and replace CUDA 13 minor-toolkit pins with their ABI-compatible
 virtual packages. This changes metadata only; it does not rebuild NVIDIA's
 binaries or Python wheels for Ubuntu 26.04. The original download is preserved.
+
+An input already built for Ubuntu 26.04 keeps its own version pins: there is
+no 24.04 tag to drop, and its pins are the ones that belong on that release.
+Its CUDA minor-toolkit pins are still rewritten, because which minor toolkits
+are available is a property of the host's CUDA repository rather than of
+Ubuntu.
 
 After upgrading an installed SDK, run `bazelisk sync --only=deepstream` before
 the next native build so Bazel refreshes its cached SDK directory listing.

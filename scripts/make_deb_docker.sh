@@ -45,10 +45,12 @@ esac
 # package will be built against and depend on.
 deepstream_artifact_resolve make_deb_docker "${DEEPSTREAM_DEB}" \
   "make deb TARGET_UBUNTU=${TARGET_UBUNTU} DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.1-1_amd64.deb" \
+  "ubuntu${TARGET_UBUNTU}" \
   "${OUTPUT_DIR:-${TOPDIR}/dist}" || exit 1
 USER_DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
 DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
 DEEPSTREAM_PACKAGE="${DEEPSTREAM_ARTIFACT_PACKAGE}"
+DEEPSTREAM_DISTRIBUTION="${DEEPSTREAM_ARTIFACT_DISTRIBUTION}"
 
 if ! git -C "${TOPDIR}" diff --quiet HEAD --; then
   echo "ERROR: refusing to label a package with Git HEAD while tracked source changes are present." >&2
@@ -99,15 +101,22 @@ git -C "${TOPDIR}" archive --format=tar "${SOURCE_REVISION}" | tar -xf - -C "${S
 source_epoch="$(git -C "${TOPDIR}" show -s --format=%ct "${SOURCE_REVISION}")"
 printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.hstream-package-source"
 
+# A package built for this release has no 24.04 tag to drop, so its own
+# version pins are left exactly as DeepStream declared them.  The CUDA minor
+# pins are not an Ubuntu matter -- NVIDIA rotates which minor toolkits a
+# repository publishes -- so those are rewritten either way.
 DOCKER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
   RELAXED_DEEPSTREAM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deepstream-deb.XXXXXX")"
   relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/${DEEPSTREAM_PACKAGE}_ubuntu26-relaxed.deb"
-  echo "[make_deb_docker] Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
-  "${TOPDIR}/scripts/remove_deb_dependencies.py" \
-    --force \
-    --output "${relaxed_deepstream_deb}" \
-    "${DEEPSTREAM_DEB}"
+  relax_args=(--force --output "${relaxed_deepstream_deb}")
+  if [[ "${DEEPSTREAM_DISTRIBUTION}" == "ubuntu${TARGET_UBUNTU}" ]]; then
+    relax_args+=(--keep-distribution-pins)
+    echo "[make_deb_docker] DeepStream is built for Ubuntu ${TARGET_UBUNTU}; relaxing CUDA minor-toolkit pins only..."
+  else
+    echo "[make_deb_docker] Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
+  fi
+  "${TOPDIR}/scripts/remove_deb_dependencies.py" "${relax_args[@]}" "${DEEPSTREAM_DEB}"
   DOCKER_DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
 fi
 

@@ -31,10 +31,13 @@ declare -A TARGET_BUILD_HOST=()
 declare -A TARGET_DEB=()
 declare -A TARGET_INSTALLER=()
 declare -A TARGET_BUILD_ERROR=()
+# Per target, because a DeepStream package may be built for one Ubuntu
+# release: a 24.04 and a 26.04 node in the same deployment do not necessarily
+# get the same artifact.
+declare -A TARGET_DEEPSTREAM_DEB=()
+declare -A TARGET_DEEPSTREAM_PACKAGE=()
 
 PACKAGE_VERSION_NORMALIZED=""
-DESKTOP_DEEPSTREAM_DEB=""
-DESKTOP_DEEPSTREAM_PACKAGE=""
 
 usage() {
   cat <<'USAGE'
@@ -400,14 +403,26 @@ REMOTE_DETECT
     "${previous_package:+${previous_package} }${previous:-not installed}"
 }
 
-resolve_desktop_deepstream_deb() {
+# The Ubuntu release a desktop target runs, in the form a DeepStream package
+# tags itself with: desktop-ubuntu26.04-amd64 -> ubuntu26.04.
+target_distribution() {
+  local target_key="${1#desktop-}"
+  printf '%s' "${target_key%-amd64}"
+}
+
+# Resolve the artifact for one desktop target.  A package built for that
+# target's release is preferred and one built for another release is refused,
+# so two desktop targets in the same deployment can take different artifacts.
+resolve_target_deepstream_deb() {
+  local target_key="$1"
   deepstream_artifact_resolve deploy "${REQUESTED_DEEPSTREAM_DEB}" \
     "make deploy NODES=... DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.1-1_amd64.deb" \
+    "$(target_distribution "${target_key}")" \
     "${DEPLOY_OUTPUT_DIR}" || return 1
-  DESKTOP_DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
+  TARGET_DEEPSTREAM_DEB["${target_key}"]="${DEEPSTREAM_ARTIFACT}"
   # The release the desktop package will be compiled against, and therefore
   # the one its nodes have to be able to satisfy.
-  DESKTOP_DEEPSTREAM_PACKAGE="${DEEPSTREAM_ARTIFACT_PACKAGE}"
+  TARGET_DEEPSTREAM_PACKAGE["${target_key}"]="${DEEPSTREAM_ARTIFACT_PACKAGE}"
 }
 
 # Mark a node that cannot satisfy the DeepStream its package will ask for.
@@ -490,7 +505,7 @@ build_target() {
         --target-ubuntu=24.04 \
         --output-dir="${output_dir}" \
         --version="${PACKAGE_VERSION_NORMALIZED}" \
-        --deepstream-deb="${DESKTOP_DEEPSTREAM_DEB}"; then
+        --deepstream-deb="${TARGET_DEEPSTREAM_DEB[${target_key}]}"; then
         TARGET_BUILD_ERROR["${target_key}"]="package build failed"
         return 1
       fi
@@ -509,7 +524,7 @@ build_target() {
         --target-ubuntu=26.04 \
         --output-dir="${output_dir}" \
         --version="${PACKAGE_VERSION_NORMALIZED}" \
-        --deepstream-deb="${DESKTOP_DEEPSTREAM_DEB}"; then
+        --deepstream-deb="${TARGET_DEEPSTREAM_DEB[${target_key}]}"; then
         TARGET_BUILD_ERROR["${target_key}"]="package build failed"
         return 1
       fi
@@ -585,6 +600,10 @@ deploy_desktop() {
   local node="$1"
   local deb="$2"
   local installer="$3"
+  # The artifact resolved for this node's target, which on a mixed deployment
+  # is not the one another node receives.  A light deployment installs no
+  # DeepStream and passes none.
+  local deepstream_deb="${4:-}"
   local remote_dir deb_name installer_name deepstream_option status=0
   local -a uploads=()
 
@@ -602,8 +621,8 @@ deploy_desktop() {
   # A light deployment adds nothing to the upload below, which is what makes it
   # quick; the artifact is by far the slowest part of an ordinary one.
   if [[ "${DEPLOY_DEEPSTREAM}" -eq 1 ]]; then
-    uploads+=("${DESKTOP_DEEPSTREAM_DEB}")
-    deepstream_option="--deepstream-deb=${remote_dir}/$(basename "${DESKTOP_DEEPSTREAM_DEB}")"
+    uploads+=("${deepstream_deb}")
+    deepstream_option="--deepstream-deb=${remote_dir}/$(basename "${deepstream_deb}")"
     printf '[deploy] %s: uploading HStream, installer, and DeepStream (this can take several minutes)...\n' "${node}"
   else
     deepstream_option="--no-deepstream"
@@ -697,7 +716,8 @@ deploy_node() {
   printf '\n[deploy] Deploying %s to %s...\n' "$(basename "${deb}")" "${node}"
   case "${target_key}" in
     desktop-*)
-      if ! deploy_desktop "${node}" "${deb}" "${TARGET_INSTALLER[${target_key}]}"; then
+      if ! deploy_desktop "${node}" "${deb}" "${TARGET_INSTALLER[${target_key}]}" \
+        "${TARGET_DEEPSTREAM_DEB[${target_key}]:-}"; then
         NODE_RESULT["${node}"]="FAILED"
         NODE_DETAIL["${node}"]="upload or installation failed"
         return 1
@@ -838,7 +858,8 @@ print_summary() {
 }
 
 main() {
-  local target_key node source_epoch source_hash overall_status=0 needs_desktop=0
+  local target_key node source_epoch source_hash deepstream_package
+  local overall_status=0 needs_desktop=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -909,14 +930,16 @@ main() {
     printf '[deploy] HStream is compiled against DeepStream, so the builder still needs the artifact.\n'
     printf '[deploy] It is a build input only; no node will receive or install it.\n'
   fi
-  if [[ "${needs_desktop}" -eq 1 ]] && ! resolve_desktop_deepstream_deb; then
-    for target_key in "${TARGET_KEYS[@]}"; do
-      if [[ "${target_key}" == desktop-* ]]; then
-        TARGET_BUILD_ERROR["${target_key}"]="DeepStream build artifact unavailable"
-      fi
-    done
-    overall_status=1
-  fi
+  # One resolution per desktop target: the releases differ, and so may the
+  # artifact each one takes.  A target without an artifact fails on its own;
+  # the other targets still build.
+  for target_key in "${TARGET_KEYS[@]}"; do
+    if [[ "${target_key}" != desktop-* ]]; then continue; fi
+    if ! resolve_target_deepstream_deb "${target_key}"; then
+      TARGET_BUILD_ERROR["${target_key}"]="DeepStream build artifact unavailable"
+      overall_status=1
+    fi
+  done
 
   # Judge each node before anything is built, now that the release a desktop
   # package will ask for is known: it is the one the artifact above carries.  A
@@ -926,8 +949,9 @@ main() {
     for node in "${NODES_LIST[@]}"; do
       if [[ -n "${NODE_RESULT[${node}]:-}" ]]; then continue; fi
       if [[ "${NODE_TARGET[${node}]}" == desktop-* ]]; then
-        if [[ -z "${DESKTOP_DEEPSTREAM_PACKAGE}" ]]; then continue; fi
-        judge_node_deepstream "${node}" "${DESKTOP_DEEPSTREAM_PACKAGE}" || overall_status=1
+        deepstream_package="${TARGET_DEEPSTREAM_PACKAGE[${NODE_TARGET[${node}]}]:-}"
+        if [[ -z "${deepstream_package}" ]]; then continue; fi
+        judge_node_deepstream "${node}" "${deepstream_package}" || overall_status=1
       else
         judge_node_deepstream "${node}" "" || overall_status=1
       fi

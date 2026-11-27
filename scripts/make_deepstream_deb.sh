@@ -35,6 +35,7 @@ esac
 OUTPUT_DIR="${OUTPUT_DIR:-${TOPDIR}/dist/ubuntu${TARGET_UBUNTU}}"
 deepstream_artifact_resolve make_deepstream_deb "${DEEPSTREAM_DEB}" \
   "make deepstream-deb TARGET_UBUNTU=${TARGET_UBUNTU} DEEPSTREAM_DEB=/path/to/deepstream.deb" \
+  "ubuntu${TARGET_UBUNTU}" \
   "${OUTPUT_DIR}"
 version="$(dpkg-deb -f "${DEEPSTREAM_ARTIFACT}" Version)"
 mkdir -p "${OUTPUT_DIR}"
@@ -49,9 +50,15 @@ fi
 # Publish only a complete package, retaining any previous output on failure.
 stage_dir="$(mktemp -d "${OUTPUT_DIR}/.deepstream-deb.XXXXXX")"
 trap 'rm -rf -- "${stage_dir}"' EXIT
+# A package built for this release keeps its own version pins; only the CUDA
+# minor pins, which are about which toolkits NVIDIA's repository publishes
+# rather than about Ubuntu, are rewritten for it.
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
-  "${TOPDIR}/scripts/remove_deb_dependencies.py" \
-    --output "${stage_dir}/deepstream.deb" "${DEEPSTREAM_ARTIFACT}"
+  relax_args=(--output "${stage_dir}/deepstream.deb")
+  if [[ "${DEEPSTREAM_ARTIFACT_DISTRIBUTION}" == "ubuntu${TARGET_UBUNTU}" ]]; then
+    relax_args+=(--keep-distribution-pins)
+  fi
+  "${TOPDIR}/scripts/remove_deb_dependencies.py" "${relax_args[@]}" "${DEEPSTREAM_ARTIFACT}"
 else
   cp --reflink=auto "${DEEPSTREAM_ARTIFACT}" "${stage_dir}/deepstream.deb"
 fi
