@@ -89,6 +89,32 @@ expect_equal "$(classify_release_tag_collision unknown absent absent)" "unknown-
 expect_equal "$(classify_release_tag_collision absent unknown present)" "unknown-remote" \
   "an unanswered remote lookup is not an absent tag"
 
+# The release lookup reads gh's own output, so pin what it expects: anything
+# other than a confirmed "not found" has to come back unknown, or a GitHub
+# outage turns into deletion advice. Stubbed rather than live, but the real
+# responses were checked against this repository.
+expect_release_state() {
+  local expected="$1" label="$2" stub="$3"
+  local actual
+  actual="$(
+    eval "gh() { ${stub}; }"
+    github_release_state owner/repo v1.0.0
+  )"
+  expect_equal "${actual}" "${expected}" "${label}"
+}
+expect_release_state absent "gh reporting no such release" \
+  'echo "release not found" >&2; return 1'
+expect_release_state published "a real release" 'echo false'
+expect_release_state draft "a draft holding the tag name" 'echo true'
+expect_release_state unknown "an API error is not an absent release" \
+  'echo "HTTP 503: unavailable" >&2; return 1'
+# gh writes diagnostics to stderr on success too; merging the streams would
+# make this draft read as a published release.
+expect_release_state draft "a draft reported alongside stderr output" \
+  'echo true; echo "warning: using cached credentials" >&2'
+expect_release_state unknown "a successful call that did not answer the question" \
+  'echo "null"'
+
 # Each message has to carry the command that clears the state it describes,
 # and the local-tag case has to show both commits: that is what separates a
 # leftover from a tag someone created on purpose.
@@ -116,7 +142,9 @@ trap 'rm -rf "${tag_repo}"' EXIT
 # Redirecting the config files is not enough on its own: an inherited
 # GIT_CONFIG would send the fixture's config writes to the developer's own
 # file, and GIT_CONFIG_COUNT can rewrite the fixture's remote URL.
-unset GIT_CONFIG GIT_CONFIG_COUNT GIT_DIR GIT_WORK_TREE
+unset GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_DIR GIT_WORK_TREE \
+  GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 export GIT_CONFIG_GLOBAL="${tag_repo}/gitconfig" GIT_CONFIG_SYSTEM=/dev/null
 export HOME="${tag_repo}/home"
 mkdir -p "${HOME}"
@@ -154,6 +182,30 @@ expect_equal "$(git -C "${work}" rev-parse "refs/tags/v9.9.6^{commit}")" "${othe
 if git -C "${tag_repo}/remote.git" rev-parse -q --verify refs/tags/v9.9.6 >/dev/null; then
   fail "a tag this run did not create was pushed to the remote"
 fi
+
+# Losing the race the other way: the name is free at the check and taken by
+# the time this run creates it. The tag now under that name belongs to
+# whoever won, so the cleanup has to keep its hands off it.
+git -C "${work}" tag -a v9.9.4 -m "the race winner's tag" "${other_head}"
+race_status=0
+(
+  cd "${work}"
+  precheck_done=0
+  git() {
+    if [[ "${1:-}" == "rev-parse" && "$*" == *"refs/tags/v9.9.4"* && "${precheck_done}" -eq 0 ]]; then
+      precheck_done=1
+      return 1
+    fi
+    if [[ "${1:-}" == "tag" && "${2:-}" == "-a" ]]; then
+      return 128
+    fi
+    command git "$@"
+  }
+  push_release_tag v9.9.4 "${work_head}" "${tag_repo}/remote.git"
+) >/dev/null 2>&1 || race_status=$?
+[[ "${race_status}" -ne 0 ]] || fail "push_release_tag succeeded after losing the creation race"
+expect_equal "$(git -C "${work}" rev-parse "refs/tags/v9.9.4^{commit}")" "${other_head}" \
+  "the tag that won the creation race survived"
 
 # Interrupted mid-push, which is how the tag survived before: the old code
 # only cleaned up when git push returned a failing status. SIGTERM rather than
@@ -193,6 +245,25 @@ accepted_status=0
 expect_equal "${accepted_status}" "143" "an interrupt after a successful push exits on the signal"
 git -C "${work}" rev-parse -q --verify refs/tags/v9.9.5 >/dev/null \
   || fail "the cleanup deleted a tag the remote had already accepted"
+
+# A push that reaches the remote and then reports failure: the acknowledgement
+# can be lost after origin has already installed the ref, so the cleanup has
+# to ask the remote rather than trust the exit status.
+lost_ack_status=0
+(
+  cd "${work}"
+  git() {
+    if [[ "${1:-}" == "push" ]]; then
+      command git "$@"
+      return 1
+    fi
+    command git "$@"
+  }
+  push_release_tag v9.9.3 "${work_head}" "${tag_repo}/remote.git"
+) >/dev/null 2>&1 || lost_ack_status=$?
+[[ "${lost_ack_status}" -ne 0 ]] || fail "push_release_tag ignored a failing push"
+git -C "${work}" rev-parse -q --verify refs/tags/v9.9.3 >/dev/null \
+  || fail "a failed push deleted a tag the remote had already accepted"
 
 # The ordinary success path keeps the tag on both sides.
 ( cd "${work}" && push_release_tag v9.9.7 "${work_head}" "${tag_repo}/remote.git" ) \
