@@ -332,7 +332,7 @@ void run_process(
   QProcess child;
   child.setWorkingDirectory(directory);
   child.setProcessEnvironment(environment);
-  child.setProcessChannelMode(QProcess::ForwardedChannels);
+  hm::experiment::forward_job_output(child);
   child.start(program, arguments);
   require(child.waitForStarted(5000), "Cannot start native experiment process");
   // The allocation supervisor contains the task and all descendants. Cancellation

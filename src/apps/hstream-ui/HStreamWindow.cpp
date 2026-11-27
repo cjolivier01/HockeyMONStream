@@ -467,16 +467,6 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
   return hm::stitching::publish_game_config(config_path.parent_path().parent_path(), contents);
 }
 
-// How a runtime log entry is presented. Runner output is classified from its
-// text; the UI's own entries arrive already classified.
-enum class LogSeverity {
-  kInfo,
-  kDetail,
-  kSuccess,
-  kWarning,
-  kError,
-};
-
 QString timestamp() {
   return QDateTime::currentDateTime().toString("hh:mm:ss.zzz");
 }
@@ -952,49 +942,6 @@ class CompressibleScrollArea : public QScrollArea {
       content->resize(target);
   }
 };
-
-QString severity_color(LogSeverity severity, bool dark_background) {
-  switch (severity) {
-    case LogSeverity::kDetail:
-      return dark_background ? "#98a2b3" : "#5b6472";
-    case LogSeverity::kSuccess:
-      return dark_background ? "#7ee787" : "#15803d";
-    case LogSeverity::kWarning:
-      return dark_background ? "#f2cc60" : "#a16207";
-    case LogSeverity::kError:
-      return dark_background ? "#ff7b72" : "#b42318";
-    case LogSeverity::kInfo:
-      break;
-  }
-  // Ordinary entries stay in the palette's own text colour.
-  return {};
-}
-
-LogSeverity classify_log_message(const QString& message, bool stderr_output) {
-  static const QRegularExpression error_pattern(
-      "\\b(?:ERROR|FATAL|ABORTED|CANCELLED|DATA_LOSS|DEADLINE_EXCEEDED|FAILED_PRECONDITION|INTERNAL|INVALID_ARGUMENT|"
-      "NOT_FOUND|OUT_OF_RANGE|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNAUTHENTICATED|UNAVAILABLE|UNIMPLEMENTED)\\b|"
-      "\\b(?:failed|failure)\\b|status=error",
-      QRegularExpression::CaseInsensitiveOption);
-  // "could not"/"unable to" also introduce recoverable notices such as a tool
-  // skipping optional metadata, so they stay a tier below outright failure.
-  static const QRegularExpression warning_pattern(
-      "\\b(?:WARN|WARNING|CRITICAL|deprecated|stale|skipping|retrying|unsupported|not supported|cannot|could not|"
-      "unable to)\\b",
-      QRegularExpression::CaseInsensitiveOption);
-  static const QRegularExpression success_pattern(
-      "\\b(?:succeeded|successfully)\\b|status=complete|\\bis complete\\b", QRegularExpression::CaseInsensitiveOption);
-  if (error_pattern.match(message).hasMatch())
-    return LogSeverity::kError;
-  if (warning_pattern.match(message).hasMatch())
-    return LogSeverity::kWarning;
-  if (success_pattern.match(message).hasMatch())
-    return LogSeverity::kSuccess;
-  // Explicitly identified stderr can use the quieter detail style. The main
-  // pipeline merges its descriptors for ordered diagnostics, so its unmarked
-  // lines have no recoverable stream origin and retain the ordinary style.
-  return stderr_output ? LogSeverity::kDetail : LogSeverity::kInfo;
-}
 
 bool is_video_file(const QString& path) {
   const QString suffix = QFileInfo(path).suffix().toLower();
@@ -24282,7 +24229,7 @@ void HStreamWindow::appendLog(const QString& message, bool stderr_output, const 
   }
   if (log_) {
     const bool dark_background = log_->palette().color(QPalette::Base).lightness() < 128;
-    const QString severity = severity_color(classify_log_message(message, stderr_output), dark_background);
+    const QString severity = hm::ui::log_message_color(message, stderr_output, dark_background);
     const QString body = hm::ui::ansi_to_html(message, dark_background);
     const QString html =
         QString("<span style=\"color:%1\">%2</span> %3")

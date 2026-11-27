@@ -157,13 +157,84 @@ void run(const fs::path& root) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--forward") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c", "printf 'HSTREAM_RECORD ok\\n'; printf decoder >&2; sleep .1; printf ' ready\\nwarning\\rpartial' >&2"});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
+  if (argc == 2 && std::string(argv[1]) == "--interleave") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c",
+         "printf HST; sleep .05; printf REAM_GRAPH; head -c 140000 /dev/zero | tr '\\0' x; "
+         "printf interrupted >&2; sleep .05; printf ' end\\n'"});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
+  if (argc == 2 && std::string(argv[1]) == "--oversized") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c",
+         "printf HSTREAM_LARGE; head -c 9000000 /dev/zero | tr '\\0' x; "
+         "printf '\\nHSTREAM_NEXT ok\\n'"});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
+  if (argc == 3 && std::string(argv[1]) == "--hold-prefix") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c",
+         "printf 'progress\\nHST'; while [ ! -f \"$1\" ]; do sleep .02; done; printf 'REAM_OK\\n'",
+         "sh",
+         argv[2]});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
   char pattern[] = "/tmp/hstream-retained-frames-XXXXXX";
   const char* directory = mkdtemp(pattern);
   if (!directory)
     return 1;
   const fs::path root(directory);
   try {
+    QProcess capture;
+    capture.start(argv[0], {"--forward"});
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot inspect experiment job output");
+    require(capture.readAllStandardOutput() == "HSTREAM_RECORD ok\n", "Native stdout changed");
+    require(
+        capture.readAllStandardError() == "[stderr] decoder ready\n[stderr] warning\r[stderr] partial",
+        "Fragmented or trailing job stderr lost its stream identity");
+    capture.setProcessChannelMode(QProcess::MergedChannels);
+    capture.start(argv[0], {"--interleave"});
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot read interleaved experiment logs");
+    const QByteArray merged = capture.readAllStandardOutput();
+    const QByteArray graph = "HSTREAM_GRAPH" + QByteArray(140000, 'x') + " end\n";
+    require(
+        merged == "[stderr] interrupted\n" + graph || merged == graph + "[stderr] interrupted",
+        "Delayed stderr split a native stdout protocol record");
+    capture.start(argv[0], {"--oversized"});
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot read oversize record");
+    const auto large = capture.readAllStandardOutput();
+    require(
+        large.contains("[stderr] WARNING:") && large.contains("[stdout] HSTREAM_LARGE") &&
+            !large.contains("\nHSTREAM_LARGE") && large.endsWith("\nHSTREAM_NEXT ok\n") &&
+            large.mid(large.indexOf("[stdout] ")).count('x') == 9000000,
+        "Oversize record escaped its bound, lost output or swallowed the next protocol line");
+    const auto resume = root / "resume";
+    capture.start(argv[0], {"--hold-prefix", QString::fromStdString(resume.string())});
+    const bool live = capture.waitForReadyRead(5000);
+    const auto progress = capture.readAllStandardOutput();
+    write_bytes(resume, "");
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot finish fragmented prefix fixture");
+    require(
+        live && progress == "progress\n" && capture.readAllStandardOutput() == "HSTREAM_OK\n",
+        "A partial protocol prefix delayed an earlier stdout line");
     run(root);
     fs::remove_all(root);
     std::cout << "Retained selected-frame materialization checks passed\n";

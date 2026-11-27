@@ -1,10 +1,12 @@
 #pragma once
 
+#include <QtCore/QProcess>
 #include <yaml-cpp/yaml.h>
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 
 namespace hm::experiment {
 using hm::web::ExperimentProcessRunner;
+void forward_job_output(QProcess& process);
 void merge_settings(YAML::Node destination, const YAML::Node& overlay);
 QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera);
 QJsonObject filtering_json(const hm::stitching::ControlPointFiltering& filtering);

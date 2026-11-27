@@ -1,7 +1,10 @@
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 
 #include <QtCore/QJsonDocument>
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -36,7 +39,120 @@ QString qs(const fs::path& path) {
 QString text(const std::string& value) {
   return QString::fromStdString(value);
 }
+// All writes to the combined job log pass through this relay. In particular,
+// delayed stderr cannot arrive inside a fragmented HSTREAM_ stdout record.
+class JobOutput {
+ public:
+  explicit JobOutput(QProcess& process) : process_(process) {}
+
+  void stdoutReady(bool finished = false) {
+    static const QByteArray marker("HSTREAM_");
+    while (process_.bytesAvailable()) {
+      if (stdout_start_) {
+        const auto prefix = process_.peek(marker.size());
+        if (!finished && prefix.size() < marker.size() && marker.startsWith(prefix))
+          break;
+        record_ = prefix.startsWith(marker);
+      }
+      const QByteArray part = process_.readLine(kBlock);
+      stdout_start_ = part.endsWith('\n');
+      if (record_ && pending_.size() + part.size() > kMaxRecord) {
+        endStderrFragment();
+        std::fputs(
+            "[stderr] WARNING: Native stdout record exceeds the 8 MiB log segment; displaying its text in chunks.\n",
+            stderr);
+        std::fflush(stderr);
+        writeChunks(pending_);
+        pending_.clear();
+        oversized_ = true;
+        record_ = false;
+      }
+      if (oversized_) {
+        writeChunks(part);
+        oversized_ = !stdout_start_;
+      } else if (record_) {
+        pending_.append(part);
+        if (stdout_start_)
+          flushRecord();
+      } else {
+        endStderrFragment();
+        std::fwrite(part.constData(), 1, part.size(), stdout);
+        visible_stdout_fragment_ = !stdout_start_;
+      }
+    }
+    if (finished && !pending_.isEmpty())
+      flushRecord();
+    std::fflush(stdout);
+  }
+
+  void stderrReady() {
+    QByteArray tagged;
+    const auto bytes = process_.readAllStandardError();
+    if (visible_stdout_fragment_ && !bytes.isEmpty()) {
+      tagged.append('\n');
+      visible_stdout_fragment_ = false;
+    }
+    for (char byte : bytes) {
+      if (stderr_start_ && byte != '\n' && byte != '\r')
+        tagged.append("[stderr] ");
+      tagged.append(byte);
+      stderr_start_ = byte == '\n' || byte == '\r';
+    }
+    std::fwrite(tagged.constData(), 1, tagged.size(), stderr);
+    std::fflush(stderr);
+  }
+
+ private:
+  void endStderrFragment() {
+    if (!stderr_start_) {
+      std::fputc('\n', stderr);
+      std::fflush(stderr);
+      stderr_start_ = true;
+    }
+  }
+  void flushRecord() {
+    endStderrFragment();
+    std::fwrite(pending_.constData(), 1, pending_.size(), stdout);
+    visible_stdout_fragment_ = !pending_.endsWith('\n');
+    pending_.clear();
+  }
+
+  void writeChunks(const QByteArray& text) {
+    // The complete record cannot fit in one retained log segment. Forward every
+    // byte as diagnostic text, without advertising a partial protocol record.
+    endStderrFragment();
+    for (qsizetype offset = 0; offset < text.size(); offset += kBlock) {
+      const auto count = std::min<qsizetype>(kBlock, text.size() - offset);
+      std::fputs("[stdout] ", stdout);
+      std::fwrite(text.constData() + offset, 1, count, stdout);
+      if (text.at(offset + count - 1) != '\n')
+        std::fputc('\n', stdout);
+    }
+    visible_stdout_fragment_ = false;
+  }
+
+  static constexpr int kBlock = 64 * 1024;
+  static constexpr int kMaxRecord = 8 * 1024 * 1024; // Standalone worker's LOG_SEGMENT_BYTES.
+  QProcess& process_;
+  bool stdout_start_ = true;
+  bool visible_stdout_fragment_ = false;
+  bool stderr_start_ = true;
+  bool record_ = false;
+  bool oversized_ = false;
+  QByteArray pending_;
+};
 } // namespace
+
+void forward_job_output(QProcess& process) {
+  process.setProcessChannelMode(QProcess::SeparateChannels);
+  const auto output = std::make_shared<JobOutput>(process);
+  QObject::connect(&process, &QProcess::readyReadStandardOutput, &process, [output] { output->stdoutReady(); });
+  QObject::connect(&process, &QProcess::readyReadStandardError, &process, [output] { output->stderrReady(); });
+  QObject::connect(&process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), &process, [output] {
+    output->stdoutReady(true);
+  });
+}
+
 void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
   for (const auto& entry : overlay) {
     const auto key = entry.first.as<std::string>();

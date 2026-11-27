@@ -379,7 +379,9 @@ static absl::Status publish_player_frame_inputs(
           // reuses them; it never maps another video surface or uploads to the GPU.
           const cv::Mat image = cv::imread(png.string(), cv::IMREAD_UNCHANGED);
           if (image.empty())
-            return absl::FailedPreconditionError("Cannot decode saved calibration PNG");
+            return absl::FailedPreconditionError(
+                "Cannot decode saved calibration PNG " + png.filename().string() + " from " +
+                images[index][camera].filename().string());
           cv::Mat thumbnail;
           const double scale = std::min(1.0, 1024.0 / std::max(image.cols, image.rows));
           cv::resize(image, thumbnail, {}, scale, scale, cv::INTER_AREA);

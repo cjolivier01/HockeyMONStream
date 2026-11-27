@@ -131,6 +131,19 @@ bool run(const fs::path& root) {
   const auto images = make_images(root / "captured");
   const fs::path source = root / "source-game";
   fs::create_directories(source);
+  auto broken_images = images;
+  const fs::path damaged = root / "bad-frame.png";
+  auto bytes = read_bytes(images[1][1]);
+  const auto idat = bytes.find("IDAT");
+  if (idat == std::string::npos)
+    throw std::runtime_error("PNG fixture is missing its IDAT chunk");
+  bytes[idat + 8] ^= 1;
+  write_bytes(damaged, bytes);
+  broken_images[1][1] = damaged;
+  const auto broken = PublishPlayerFrameInputs(source, plan, broken_images);
+  ok &= expect(
+      !broken.ok() && broken.ToString().find("right_1.png from bad-frame.png") != std::string::npos,
+      "a corrupt PNG identifies the staged camera/frame and its source");
   auto absent = LoadPlayerFrameInputs(source, plan);
   ok &= expect(absent.ok() && !absent->has_value(), "only an absent bundle returns no input set");
   YAML::Node rewritten = PlayerFrameSelectionPlanYaml(plan);

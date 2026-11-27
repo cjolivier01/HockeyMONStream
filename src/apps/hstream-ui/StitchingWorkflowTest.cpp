@@ -56,9 +56,9 @@ void require(bool condition, const char* message) {
     throw std::runtime_error(message);
 }
 void write(const QString& path, const QByteArray& bytes) {
-  QFile file(path);
+  QSaveFile file(path);
   require(file.open(QIODevice::WriteOnly), "Cannot open fixture file");
-  require(file.write(bytes) == bytes.size(), "Cannot write fixture file");
+  require(file.write(bytes) == bytes.size() && file.commit(), "Cannot publish fixture file");
 }
 QJsonObject read(const QString& path) {
   QFile file(path);
@@ -246,7 +246,7 @@ elif operation=='submit':
   node['attempts']=[dict(id='attempt-current',epoch=0,state='running',details={'scheduler_id':'31','host':'compute-a','reason':'Resources'})] if index==0 else []
   nodes.append(node)
  value=dict(workflow_id=plan['workflow_id'],state='running',owner_released=False,epoch=0,revision=1,nodes=nodes,limits=plan['limits'])
- (root/'state.json').write_text(json.dumps(value))
+ temporary=root/('state-'+str(os.getpid())+'.json'); temporary.write_text(json.dumps(value)); temporary.replace(root/'state.json')
  mode=(root/'submit-response-mode').read_text() if (root/'submit-response-mode').exists() else ''
  if mode=='timeout': time.sleep(60)
  if mode=='empty': raise SystemExit(0)
@@ -285,7 +285,7 @@ elif operation in ('cancel','retry'):
    if node['id'] not in ids: continue
    node['state']='running'
    node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
- (root/'state.json').write_text(json.dumps(value))
+ temporary=root/('state-'+str(os.getpid())+'.json'); temporary.write_text(json.dumps(value)); temporary.replace(root/'state.json')
  if operation=='cancel' and (root/'lose-cancel-response').exists():
   print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
  if operation=='retry' and (root/'lose-retry-response').exists():
@@ -298,7 +298,7 @@ elif operation in ('cancel','retry'):
 elif operation=='log':
  value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
  if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
- if (root/'hold-log-response').exists():
+ if (root/'hold-log-response').exists() and option('--attempt')=='attempt-current':
   (root/'log-request-started').write_text(option('--stage'))
   while (root/'hold-log-response').exists(): time.sleep(.01)
 else: raise SystemExit(9)
@@ -1307,9 +1307,6 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   detail_poll.restart();
   require(wait([&] { return detail_poll.elapsed() > 400; }), "Node log polling stalled");
   require(log_window->isVisible(), "Workflow polling dismissed the node log");
-  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
-  if (!log_screenshot.isEmpty())
-    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
   write(root + "/state.json", QJsonDocument(original_state).toJson());
   pane->showLog();
   require(
@@ -1331,6 +1328,27 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   update_log("Initial tail\n");
   require(
       log_scroll->maximum() > 0 && log_scroll->value() == log_scroll->maximum(), "Workflow log did not open at tail");
+  update_log("Job started\n[stderr] Decoder detail\n**PERF: 42 fps\nWARNING: frame late\nlibpng error: IDAT CRC\n");
+  const auto color = [&](const QString& sample) {
+    const auto cursor = log->document()->find(sample);
+    require(!cursor.isNull(), "Stage output lost text");
+    return cursor.charFormat().foreground().color();
+  };
+  require(
+      color("Decoder detail") != color("Job started") && color("WARNING: frame late") != color("Decoder detail") &&
+          color("libpng error") != color("WARNING: frame late") && color("**PERF:") != color("Job started"),
+      "Stage log lost its stream or severity colors");
+  output += "\x1b[34mFirst ANSI line\nSecond ANSI line";
+  write(root + "/log.txt", output);
+  require(wait([&] { return log->toPlainText().endsWith("Second ANSI line"); }), "Multiline ANSI did not arrive");
+  const QColor blue = log->palette().color(QPalette::Base).lightness() < 128 ? QColor("#81a1c1") : QColor("#1d4ed8");
+  require(color("First ANSI line") == blue && color("Second ANSI line") == blue, "Multiline color was lost");
+  update_log(" continued\nThird ANSI line");
+  require(color("continued") == blue && color("Third ANSI line") == blue, "Appended log lost its active color");
+  output += "\x1b[0m\n";
+  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
+  if (!log_screenshot.isEmpty())
+    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
   update_log("New tail\n");
   require(log_scroll->value() == log_scroll->maximum(), "Workflow polling lost tail following");
   log_scroll->setValue(30);
@@ -1379,12 +1397,14 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(
       log->window()->windowTitle().contains(other_node.value("label").toString()) &&
           log->toPlainText().contains("Diagnostics for the newly selected stage") &&
-          log->toPlainText().endsWith("Loading attempt log…") &&
+          (log->toPlainText().endsWith("Loading attempt log…") ||
+           log->toPlainText().endsWith("attempt-other retained log")) &&
           !log->toPlainText().contains("attempt-current retained log"),
       "Stage selection displayed the previous log under a new title while its request was pending");
-  QFile::remove(root + "/hold-log-response");
   require(
-      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }), "New stage log did not load");
+      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }),
+      "An outstanding request for the old attempt blocked the new stage log");
+  QFile::remove(root + "/hold-log-response");
   require(
       !log->toPlainText().contains("attempt-current retained log"), "Late response replaced the selected stage log");
   QFile::remove(root + "/log-request-started");
@@ -1432,6 +1452,10 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
             .contains("attempt-current retained log");
       }),
       "Old attempt log selection was lost");
+  widget<QToolButton>(*graph, qPrintable("stitchWorkflowNodeLog_" + first_id))->click();
+  require(
+      wait([&] { return log->toPlainText().contains("attempt-retry retained log"); }),
+      "Reopening the document icon kept an earlier attempt");
   const auto id = pane->workflowId();
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SCREENSHOT");
   if (!screenshot.isEmpty())
