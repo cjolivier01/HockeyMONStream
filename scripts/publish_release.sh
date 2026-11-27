@@ -317,9 +317,10 @@ report_release_tag_collision() {
       ;;
   esac
   if [[ -n "${staging}" ]]; then
-    echo "Staged packages are still in ${staging}. That directory is named after this" >&2
-    echo "version, so it blocks a retry of ${tag} but not a run at the next version;" >&2
-    echo "archive or remove it before retrying this one." >&2
+    echo "Staged packages from this version are still in:" >&2
+    echo "  ${staging}" >&2
+    echo "That directory is named after ${tag}, so it blocks a retry of this version but" >&2
+    echo "not a run at the next one. Archive or remove it before retrying this one." >&2
   fi
 }
 
