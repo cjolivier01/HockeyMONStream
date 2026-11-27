@@ -217,7 +217,10 @@ signal_status=0
   git() {
     if [[ "${1:-}" == "push" ]]; then
       kill -TERM "${BASHPID}"
-      sleep 10
+      # Reaching this line means the signal was swallowed and the real push
+      # is about to happen, which would make the case pass for the wrong
+      # reason. The distinct status says so.
+      exit 70
     fi
     command git "$@"
   }
@@ -235,8 +238,7 @@ accepted_status=0
     if [[ "${1:-}" == "push" ]]; then
       command git "$@"
       kill -TERM "${BASHPID}"
-      sleep 10
-      return 0
+      exit 70
     fi
     command git "$@"
   }
@@ -245,6 +247,29 @@ accepted_status=0
 expect_equal "${accepted_status}" "143" "an interrupt after a successful push exits on the signal"
 git -C "${work}" rev-parse -q --verify refs/tags/v9.9.5 >/dev/null \
   || fail "the cleanup deleted a tag the remote had already accepted"
+
+# The tag is created by name and its id read back by name, so a replacement
+# in that gap would be adopted and pushed under packages built from another
+# commit. The read-back has to peel to this run's revision, and a tag that
+# does not is left where it is rather than deleted.
+replaced_status=0
+(
+  cd "${work}"
+  git() {
+    if [[ "${1:-}" == "tag" && "${2:-}" == "-a" ]]; then
+      command git tag -a "$3" -m "a replacement tag" "${other_head}"
+      return 0
+    fi
+    command git "$@"
+  }
+  push_release_tag v9.9.2 "${work_head}" "${tag_repo}/remote.git"
+) >/dev/null 2>&1 || replaced_status=$?
+[[ "${replaced_status}" -ne 0 ]] || fail "push_release_tag pushed a tag off this run's revision"
+expect_equal "$(git -C "${work}" rev-parse "refs/tags/v9.9.2^{commit}")" "${other_head}" \
+  "a tag pointing somewhere else was left in place"
+if git -C "${tag_repo}/remote.git" rev-parse -q --verify refs/tags/v9.9.2 >/dev/null; then
+  fail "a tag off this run's revision reached the remote"
+fi
 
 # A push that reaches the remote and then reports failure: the acknowledgement
 # can be lost after origin has already installed the ref, so the cleanup has

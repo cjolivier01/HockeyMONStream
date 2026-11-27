@@ -24,8 +24,8 @@ removed.
 --exclude takes a comma- or space-separated list of platforms to leave out of
 the release, for building a release when one target's hardware or toolchain is
 unavailable. Supported names are ubuntu24, ubuntu26, jetson, and windows; the
-option can be repeated. Excluding jetson also drops the Hugin and VIGRA
-corresponding-source archives, which accompany only the Jetson package.
+option can be repeated. Excluding ubuntu24 also requires excluding windows,
+because the Windows installer downloads the Ubuntu 24.04 package by name.
 USAGE
 }
 
@@ -169,8 +169,13 @@ remove_unpushed_release_tag() {
   # update-ref checks the expected id under the ref lock, so a tag replaced
   # between here and the previous lookup is not deleted by name.
   if ! git update-ref -d "refs/tags/${tag}" "${object}" 2>/dev/null; then
-    echo "WARNING: could not remove the unpushed tag ${tag}. Check it, then delete it with:" >&2
-    echo "  git tag -d ${tag}" >&2
+    # Most likely the ref no longer points at this run's object, in which case
+    # it belongs to someone else and must stay. Repeat the same id-checked
+    # command rather than 'git tag -d', which would delete it by name.
+    echo "WARNING: did not remove the unpushed tag ${tag}: it is gone already, or it no" >&2
+    echo "longer points at the object this run created. Leave it alone unless this" >&2
+    echo "command, which refuses any other object, succeeds:" >&2
+    echo "  git update-ref -d refs/tags/${tag} ${object}" >&2
   fi
   # Cleared last: a signal arriving during the work above re-enters this
   # function with the claim intact rather than losing track of the tag.
@@ -186,6 +191,7 @@ remove_unpushed_release_tag() {
 # interrupted command instead of ending the script.
 push_release_tag() {
   local release_tag="$1" source_revision="$2" remote="$3"
+  local tag_object="" tagged_commit="" expected_commit=""
   # The caller runs this behind 'if !', which suppresses errexit for the whole
   # function, so every step has to be checked by hand. A name that appeared
   # since the last check belongs to someone else: pushing it would publish
@@ -209,13 +215,22 @@ push_release_tag() {
     echo "ERROR: could not create the release tag ${release_tag}." >&2
     return 1
   fi
-  unpushed_release_tag_object="$(git rev-parse -q --verify "refs/tags/${release_tag}" || true)"
-  if [[ -z "${unpushed_release_tag_object}" ]]; then
-    remove_unpushed_release_tag push-failed
+  # The id has to be read back through the name, so check that what is there
+  # is what was just created: a forced replacement in this gap would otherwise
+  # be adopted, then pushed under packages built from another commit. Claim it
+  # only once it peels to this run's revision; anything else is left untouched
+  # rather than deleted, because it is not ours to remove.
+  tag_object="$(git rev-parse -q --verify "refs/tags/${release_tag}" || true)"
+  tagged_commit="$(git rev-parse -q --verify "${tag_object}^{commit}" 2>/dev/null || true)"
+  expected_commit="$(git rev-parse -q --verify "${source_revision}^{commit}" 2>/dev/null || true)"
+  if [[ -z "${tag_object}" || -z "${expected_commit}" || "${tagged_commit}" != "${expected_commit}" ]]; then
+    unpushed_release_tag=""
     trap - EXIT INT TERM
-    echo "ERROR: could not read back the release tag ${release_tag} after creating it." >&2
+    echo "ERROR: ${release_tag} does not point at this run's revision after creating it." >&2
+    echo "Refusing to push it. Check what that tag is before publishing again." >&2
     return 1
   fi
+  unpushed_release_tag_object="${tag_object}"
   # Pushed by object id rather than by name: the name could be replaced
   # between the read-back and the push, which would publish another commit
   # under the packages this run built.
@@ -266,9 +281,9 @@ report_release_tag_collision() {
       ;;
     draft)
       echo "ERROR: ${repository} has a draft release holding the name ${tag}." >&2
-      echo "A draft is visible only to its publisher and can exist before its tag does," >&2
-      echo "including while another publish is still uploading assets. Find out whose it" >&2
-      echo "is and let a running publish finish; publish or discard an abandoned draft." >&2
+      echo "A draft can exist before its tag does, including while a publish is still" >&2
+      echo "uploading its assets. Find out whose it is and let a running publish finish;" >&2
+      echo "publish or discard an abandoned draft." >&2
       ;;
     remote-tag)
       echo "ERROR: origin has tag ${tag}, but ${repository} has no release for it." >&2
@@ -302,8 +317,9 @@ report_release_tag_collision() {
       ;;
   esac
   if [[ -n "${staging}" ]]; then
-    echo "Staged packages from an earlier attempt are still in ${staging};" >&2
-    echo "archive or remove that directory too, or the next run stops on it." >&2
+    echo "Staged packages are still in ${staging}. That directory is named after this" >&2
+    echo "version, so it blocks a retry of ${tag} but not a run at the next version;" >&2
+    echo "archive or remove it before retrying this one." >&2
   fi
 }
 
@@ -661,17 +677,25 @@ recheck_collision="$(classify_release_tag_collision \
   "$(github_release_state "${repository}" "${release_tag}")" \
   "$(remote_tag_state origin "${release_tag}")" \
   "$(git show-ref --verify --quiet "refs/tags/${release_tag}" && echo present || echo absent)")"
+revisions_changed=0
 if [[ "${new_latest_tag}" != "${latest_tag}" ]] ||
    [[ "$(git rev-parse HEAD)" != "${source_revision}" ]] ||
-   [[ "$(git rev-parse "refs/remotes/origin/${default_branch}")" != "${remote_revision}" ]] ||
-   [[ "${recheck_collision}" != "none" ]]; then
-  echo "ERROR: release tags or source revisions changed while packages were building;" >&2
-  echo "artifacts remain in ${release_dir}." >&2
+   [[ "$(git rev-parse "refs/remotes/origin/${default_branch}")" != "${remote_revision}" ]]; then
+  revisions_changed=1
+fi
+if [[ "${revisions_changed}" -eq 1 || "${recheck_collision}" != "none" ]]; then
+  # Only claim a change when one was seen: an unanswered lookup stops the run
+  # too, and reporting that as a changed revision sends the reader hunting
+  # for something that did not happen.
+  if [[ "${revisions_changed}" -eq 1 ]]; then
+    echo "ERROR: release tags or source revisions changed while packages were building." >&2
+  fi
   if [[ "${recheck_collision}" != "none" ]]; then
     report_release_tag_collision "${recheck_collision}" "${release_tag}" "${repository}" \
       "$(git rev-parse --short "refs/tags/${release_tag}^{commit}" 2>/dev/null || echo "an unreadable commit")" \
-      "$(git rev-parse --short HEAD)" "${release_dir}"
+      "$(git rev-parse --short HEAD)" ""
   fi
+  echo "The packages this run built remain in ${release_dir}." >&2
   exit 1
 fi
 
