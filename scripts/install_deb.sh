@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# License text: https://www.gnu.org/licenses/gpl-3.0.txt
 # Install the local DeepStream and HStream Debian artifacts on a clean Ubuntu
 # host, including the NVIDIA repositories that provide their CUDA/TensorRT
 # dependencies.  With --no-deepstream only HStream is installed, against the

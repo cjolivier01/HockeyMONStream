@@ -26,4 +26,4 @@ The project is an independent self-hosted option for developers, researchers, an
 
 ## Important requirements
 
-Users provide their own compatible cameras or recordings, NVIDIA GPU hardware, storage, and NVIDIA software dependencies. NVIDIA DeepStream is not bundled in HockeyMONStream's installers and retains its own terms. Files in this repository can carry MIT, Apache-2.0, or NVIDIA proprietary notices; the most specific file-level notice controls.
+Users provide their own compatible cameras or recordings, NVIDIA GPU hardware, storage, and NVIDIA software dependencies. NVIDIA DeepStream is not bundled in HockeyMONStream's installers and retains its own terms. Original HockeyMONStream code and documentation use GPLv3 or later by default. Imported DeepStream-Yolo material retains its MIT notice. Separately licensed components and model assets retain their own terms, including Apache-2.0 and NVIDIA proprietary notices where applicable.

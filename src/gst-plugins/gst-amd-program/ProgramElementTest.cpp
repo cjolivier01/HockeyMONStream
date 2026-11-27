@@ -135,6 +135,13 @@ void Run() {
   gst_object_unref(unconfigured);
   {
     Pipeline graph;
+    for (const auto* name : {"hstreamamdprogram", "hstreamrinkmap"}) {
+      auto* plugin = gst_registry_find_plugin(gst_registry_get(), name);
+      Check(plugin != nullptr, "Missing registered Program plugin");
+      const bool reports_gpl = g_strcmp0(gst_plugin_get_license(plugin), "GPL") == 0;
+      gst_object_unref(plugin);
+      Check(reports_gpl, "Program plugin must report its GPL license");
+    }
     auto* retained = Input();
     graph.Push(gst_buffer_ref(retained));
     auto* sample = graph.Pull();

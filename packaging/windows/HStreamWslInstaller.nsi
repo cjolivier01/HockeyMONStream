@@ -135,7 +135,11 @@ Function RunHStreamProvisioning
 FunctionEnd
 
 Section "HStream WSL environment" SEC_MAIN
+  SetOutPath "$INSTDIR\third_party"
+  File "${PROJECT_ROOT}/third_party/DeepStream-Yolo-LICENSE.txt"
   SetOutPath "$INSTDIR"
+  File "${PROJECT_ROOT}/LICENSE.md"
+  File "${PROJECT_ROOT}/LICENSING.md"
   File /oname=hstream-wsl.ps1 "${POWERSHELL_SOURCE}"
   File /oname=install-hstream-deb "${LINUX_INSTALLER_SOURCE}"
   File /oname=hstream.ico "${ICON_FILE}"
@@ -217,6 +221,10 @@ PreserveDistro:
   DeleteRegKey HKCU "Software\HStream"
   Delete "$INSTDIR\hstream-wsl.ps1"
   Delete "$INSTDIR\install-hstream-deb"
+  Delete "$INSTDIR\third_party\DeepStream-Yolo-LICENSE.txt"
+  RMDir "$INSTDIR\third_party"
+  Delete "$INSTDIR\LICENSE.md"
+  Delete "$INSTDIR\LICENSING.md"
   Delete "$INSTDIR\hstream.ico"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"

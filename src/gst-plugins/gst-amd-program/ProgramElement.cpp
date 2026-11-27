@@ -217,7 +217,7 @@ bool RegisterRinkMapPlugin() {
         "GPU rink minimap output overlay",
         RegisterRinkMap,
         "1.0",
-        "MIT/X11",
+        "GPL",
         "HockeyMONStream",
         "HockeyMONStream",
         "https://github.com/cjolivier01/HockeyMONStream");
@@ -253,7 +253,7 @@ bool RegisterProgramPlugin() {
         "Native AMD Program components",
         Register,
         "1.0",
-        "MIT/X11",
+        "GPL",
         "HockeyMONStream",
         "HockeyMONStream",
         "https://github.com/cjolivier01/HockeyMONStream");

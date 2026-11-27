@@ -385,8 +385,9 @@ int main(int argc, char** argv) {
     g_clear_error(&error);
     return 1;
   }
+  const bool reports_gpl = Check(g_strcmp0(gst_plugin_get_license(plugin), "GPL") == 0, "Expected GPL plugin license");
   gst_object_unref(plugin);
-  if (!Disabled() || (argc == 3 && !Enabled(argv[2])))
+  if (!reports_gpl || !Disabled() || (argc == 3 && !Enabled(argv[2])))
     return 1;
   std::cout << "Disabled CUDA/file bypass"
             << (argc == 3 ? "; real pose, cadence, discontinuity, flush and error fencing" : "") << " passed\n";

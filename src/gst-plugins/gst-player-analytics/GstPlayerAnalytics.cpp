@@ -328,6 +328,6 @@ GST_PLUGIN_DEFINE(
     "Optional HStream GPU player analytics",
     Register,
     "1.0",
-    "Proprietary",
+    "GPL",
     "hstream",
     "https://github.com/cjolivier01/HockeyMONStream")
