@@ -87,8 +87,9 @@ def submit(root, profile, supervisor_command, timeout):
     intent.update(cluster=cluster.group(1), user=pwd.getpwuid(os.getuid()).pw_name)
     write_json(root / "submission.json", intent)
     script = root / "job.sh"
+    # GStreamer plugin discovery can block opening the submitter's X11 display.
     contents = (
-        "#!/usr/bin/env bash\nset -euo pipefail\numask 077\nexec "
+        "#!/usr/bin/env bash\nset -euo pipefail\numask 077\nunset DISPLAY\nexec "
         + shlex.join(supervisor_command)
         + "\n"
     )
