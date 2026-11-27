@@ -87,13 +87,69 @@ resolve_release_platforms() {
   printf '%s\n' "${included[@]}"
 }
 
+# Does the remote carry this tag? 'unknown' when the lookup itself failed:
+# every caller below either deletes something or publishes on the answer, so a
+# transport error must never read as an absent ref. git ls-remote --exit-code
+# reserves status 2 for "no matching ref" and uses other statuses for errors.
+remote_tag_state() {
+  local remote="$1" tag="$2" status=0
+  git ls-remote --exit-code --tags "${remote}" "refs/tags/${tag}" >/dev/null 2>&1 || status=$?
+  case "${status}" in
+    0) printf 'present\n' ;;
+    2) printf 'absent\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+# published | draft | absent | unknown. A draft is visible to its publisher
+# under a tag that may not exist yet, so it cannot be reported as published.
+github_release_state() {
+  local repository="$1" tag="$2" output status=0
+  output="$(gh release view "${tag}" --repo "${repository}" --json isDraft --jq '.isDraft' 2>&1)" \
+    || status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    if [[ "${output}" == "true" ]]; then printf 'draft\n'; else printf 'published\n'; fi
+    return 0
+  fi
+  if [[ "${output}" == *"release not found"* ]]; then
+    printf 'absent\n'
+  else
+    printf 'unknown\n'
+  fi
+}
+
 # Set while a release tag exists locally but has not reached the remote yet.
 unpushed_release_tag=""
+unpushed_release_tag_object=""
+unpushed_release_remote=""
 
+# Remove the tag this run created, if it is still that exact object and the
+# remote does not have it. Pass 'push-failed' when git push reported failure:
+# the ref was not updated, so the remote needs no consulting, and the common
+# case of an unreachable remote still gets cleaned up.
 remove_unpushed_release_tag() {
-  [[ -n "${unpushed_release_tag}" ]] || return 0
-  git tag -d "${unpushed_release_tag}" >/dev/null 2>&1 || true
+  local tag="${unpushed_release_tag}" object="${unpushed_release_tag_object}" current=""
+  [[ -n "${tag}" ]] || return 0
   unpushed_release_tag=""
+  unpushed_release_tag_object=""
+  current="$(git rev-parse -q --verify "refs/tags/${tag}" 2>/dev/null || true)"
+  [[ -n "${current}" ]] || return 0
+  # An empty object means the tag was created but its id was never recorded;
+  # push_release_tag verified the name was free immediately before creating
+  # it, so whatever is there now is this run's.
+  if [[ -n "${object}" && "${current}" != "${object}" ]]; then
+    echo "WARNING: ${tag} no longer points at the object this run created; leaving it alone." >&2
+    return 0
+  fi
+  if [[ "${1:-}" != "push-failed" ]] \
+    && [[ "$(remote_tag_state "${unpushed_release_remote}" "${tag}")" != "absent" ]]; then
+    echo "WARNING: leaving local tag ${tag} in place: ${unpushed_release_remote} may already have it." >&2
+    return 0
+  fi
+  if ! git tag -d "${tag}" >/dev/null 2>&1; then
+    echo "WARNING: could not remove the unpushed tag ${tag}. Delete it before publishing again:" >&2
+    echo "  git tag -d ${tag}" >&2
+  fi
 }
 
 # Create the release tag and push it, removing the local tag again if anything
@@ -104,22 +160,113 @@ remove_unpushed_release_tag() {
 # interrupted command instead of ending the script.
 push_release_tag() {
   local release_tag="$1" source_revision="$2" remote="$3"
+  # The caller runs this behind 'if !', which suppresses errexit for the whole
+  # function, so every step has to be checked by hand. A name that appeared
+  # since the last check belongs to someone else: pushing it would publish
+  # another commit under this run's packages.
+  if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null 2>&1; then
+    echo "ERROR: ${release_tag} appeared in this clone after the final check." >&2
+    echo "Refusing to push a tag this run did not create." >&2
+    return 1
+  fi
+  unpushed_release_remote="${remote}"
   trap remove_unpushed_release_tag EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  # Claimed before the tag exists: between these two the window is a single
-  # failed command, and deleting a tag that was never created is harmless.
+  # Claimed before the tag exists, so a signal in the gap between these two
+  # still reaches the cleanup; the name was just verified free.
   unpushed_release_tag="${release_tag}"
-  git tag -a "${release_tag}" "${source_revision}" -m "HockeyMONStream ${release_tag}"
+  unpushed_release_tag_object=""
+  if ! git tag -a "${release_tag}" "${source_revision}" -m "HockeyMONStream ${release_tag}"; then
+    remove_unpushed_release_tag push-failed
+    trap - EXIT INT TERM
+    echo "ERROR: could not create the release tag ${release_tag}." >&2
+    return 1
+  fi
+  unpushed_release_tag_object="$(git rev-parse -q --verify "refs/tags/${release_tag}" || true)"
   if ! git push "${remote}" "refs/tags/${release_tag}"; then
-    remove_unpushed_release_tag
+    remove_unpushed_release_tag push-failed
     trap - EXIT INT TERM
     return 1
   fi
   # On the remote now, so it has to survive a later failure: the release can
   # then be finished by hand or deleted deliberately.
   unpushed_release_tag=""
+  unpushed_release_tag_object=""
   trap - EXIT INT TERM
+}
+
+# Which collision to report, from the three observed states. Ordered most to
+# least published: a release implies its tag, and a pushed tag outlives a
+# release creation that failed after it. An indeterminate lookup is reported
+# as itself, never as an absence, because each recovery below deletes
+# something.
+classify_release_tag_collision() {
+  local release_state="$1" remote_state="$2" local_state="$3"
+  case "${release_state}" in
+    published|draft) printf '%s\n' "${release_state}"; return 0 ;;
+    unknown) printf 'unknown-release\n'; return 0 ;;
+  esac
+  case "${remote_state}" in
+    present) printf 'remote-tag\n'; return 0 ;;
+    unknown) printf 'unknown-remote\n'; return 0 ;;
+  esac
+  if [[ "${local_state}" == "present" ]]; then
+    printf 'local-tag\n'
+    return 0
+  fi
+  printf 'none\n'
+}
+
+# Describe one collision on stderr. These messages state what was observed and
+# leave the cause to the operator: a tag on origin may belong to a publish
+# that is still running, and a local tag may have been created deliberately.
+report_release_tag_collision() {
+  local kind="$1" tag="$2" repository="$3" stray_commit="$4" head_commit="$5" staging="$6"
+  case "${kind}" in
+    published)
+      echo "ERROR: ${tag} is already released at ${repository}." >&2
+      echo "Nothing to retry here. The next version comes from origin's newest release tag," >&2
+      echo "so check what origin has: git ls-remote --tags origin" >&2
+      ;;
+    draft)
+      echo "ERROR: ${repository} has a draft release holding the name ${tag}." >&2
+      echo "A draft is visible only to you and can exist before its tag does." >&2
+      echo "Publish or discard it before releasing this version." >&2
+      ;;
+    remote-tag)
+      echo "ERROR: origin has tag ${tag}, but ${repository} has no release for it." >&2
+      echo "It appeared after this run listed origin's tags. That is either an earlier run" >&2
+      echo "that pushed the tag and then failed to create the release, or a publish still" >&2
+      echo "in progress right now, which owns both that tag and the release it is about to" >&2
+      echo "create. Check for a running publish first. Once nothing is using it:" >&2
+      echo "  make delete-release RELEASE_TAG=${tag}" >&2
+      ;;
+    local-tag)
+      echo "ERROR: tag ${tag} exists in this clone only, on neither origin nor ${repository}." >&2
+      echo "It points at ${stray_commit}; a fresh tag would point at HEAD, ${head_commit}." >&2
+      echo "An interrupted publish leaves exactly this behind, but it may also have been" >&2
+      echo "created deliberately. If it is a leftover, delete it and retry:" >&2
+      echo "  git tag -d ${tag}" >&2
+      ;;
+    unknown-release)
+      echo "ERROR: could not determine whether ${repository} already has a release for ${tag}." >&2
+      echo "Refusing to guess: every recovery from here deletes something. Retry once" >&2
+      echo "'gh release view ${tag} --repo ${repository}' answers." >&2
+      ;;
+    unknown-remote)
+      echo "ERROR: could not determine whether origin already has tag ${tag}." >&2
+      echo "Refusing to guess: every recovery from here deletes something. Retry once" >&2
+      echo "'git ls-remote --tags origin' answers." >&2
+      ;;
+    *)
+      echo "ERROR: unexpected release tag state: ${kind}" >&2
+      ;;
+  esac
+  if [[ -n "${staging}" ]]; then
+    echo "Staged packages from an earlier attempt are still in ${staging};" >&2
+    echo "archive or remove that directory too, or the next run stops on it." >&2
+  fi
 }
 
 # Let the test source the platform selection without running a release.
@@ -319,30 +466,26 @@ if [[ "${source_revision}" != "${remote_revision}" ]]; then
   exit 1
 fi
 # The next version comes from origin alone, so a tag that exists anywhere else
-# collides without ever advancing the number. The three places it can exist
-# have three unrelated causes and three different fixes, so report the one that
-# actually fired rather than the bare collision. Checked from most to least
-# published: a release implies its tag, and a pushed tag outlives a release
-# creation that failed after it.
-if gh release view "${release_tag}" --repo "${repository}" >/dev/null 2>&1; then
-  echo "ERROR: ${release_tag} is already published at ${repository}." >&2
-  echo "Nothing to retry here. Publishing resumes once origin's newest tag is this one," >&2
-  echo "which it is not; run 'git ls-remote --tags origin' to see what origin actually has." >&2
-  exit 1
-fi
-if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
-  echo "ERROR: tag ${release_tag} is already on origin, but ${repository} has no release for it." >&2
-  echo "An earlier run pushed the tag and then failed to create the release." >&2
-  echo "Finish that release by hand, or drop the tag and start over with:" >&2
-  echo "  make delete-release RELEASE_TAG=${release_tag}" >&2
-  exit 1
-fi
+# collides without ever advancing the number. The places it can exist have
+# unrelated causes and different fixes, so report the one that actually fired
+# rather than the bare collision.
+local_tag_state=absent
 if git show-ref --verify --quiet "refs/tags/${release_tag}"; then
-  stray_commit="$(git rev-parse --short "refs/tags/${release_tag}^{commit}" 2>/dev/null || echo "unknown commit")"
-  echo "ERROR: tag ${release_tag} exists in this clone only, on neither origin nor ${repository}." >&2
-  echo "An interrupted publish left it behind, pointing at ${stray_commit}." >&2
-  echo "Delete it and retry; the replacement will tag HEAD, $(git rev-parse --short HEAD):" >&2
-  echo "  git tag -d ${release_tag}" >&2
+  local_tag_state=present
+fi
+tag_collision="$(classify_release_tag_collision \
+  "$(github_release_state "${repository}" "${release_tag}")" \
+  "$(remote_tag_state origin "${release_tag}")" \
+  "${local_tag_state}")"
+if [[ "${tag_collision}" != "none" ]]; then
+  stray_commit=""
+  if [[ "${local_tag_state}" == "present" ]]; then
+    stray_commit="$(git rev-parse --short "refs/tags/${release_tag}^{commit}" 2>/dev/null \
+      || echo "an unreadable commit")"
+  fi
+  report_release_tag_collision "${tag_collision}" "${release_tag}" "${repository}" \
+    "${stray_commit}" "$(git rev-parse --short HEAD)" \
+    "$([[ -e "${release_dir}" ]] && printf '%s' "${release_dir}")"
   exit 1
 fi
 if [[ -e "${release_dir}" ]]; then
@@ -473,13 +616,24 @@ done
 # same version while this process was compiling packages.
 git fetch --quiet origin "${default_branch}"
 new_latest_tag="$(latest_remote_release_tag)"
+# Same rule as the preflight: a lookup that could not answer is not an
+# absence. Tagging on an unanswered question is how two publishers end up
+# claiming one version.
+recheck_collision="$(classify_release_tag_collision \
+  "$(github_release_state "${repository}" "${release_tag}")" \
+  "$(remote_tag_state origin "${release_tag}")" \
+  "$(git show-ref --verify --quiet "refs/tags/${release_tag}" && echo present || echo absent)")"
 if [[ "${new_latest_tag}" != "${latest_tag}" ]] ||
    [[ "$(git rev-parse HEAD)" != "${source_revision}" ]] ||
    [[ "$(git rev-parse "refs/remotes/origin/${default_branch}")" != "${remote_revision}" ]] ||
-   git show-ref --verify --quiet "refs/tags/${release_tag}" ||
-   gh release view "${release_tag}" --repo "${repository}" >/dev/null 2>&1; then
+   [[ "${recheck_collision}" != "none" ]]; then
   echo "ERROR: release tags or source revisions changed while packages were building;" >&2
   echo "artifacts remain in ${release_dir}." >&2
+  if [[ "${recheck_collision}" != "none" ]]; then
+    report_release_tag_collision "${recheck_collision}" "${release_tag}" "${repository}" \
+      "$(git rev-parse --short "refs/tags/${release_tag}^{commit}" 2>/dev/null || echo "an unreadable commit")" \
+      "$(git rev-parse --short HEAD)" ""
+  fi
   exit 1
 fi
 
