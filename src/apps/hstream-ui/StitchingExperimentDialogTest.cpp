@@ -2291,7 +2291,9 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         "Main calibration must never be individually removable");
     widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:01");
     add_options(dialog);
-    require(table->rowCount() == 3 && status->text().contains("reference"), "Saved reference conflicts must fail");
+    require(
+        table->rowCount() == 3 && status->text().contains("reference"),
+        qPrintable("Saved reference conflicts must fail: " + status->text()));
     widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:00");
     widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
     require(

@@ -227,7 +227,8 @@ void plans(const StitchingExperimentStore& store) {
   sibling.workflow_id = "older-workflow";
   sibling.selection_fingerprint = "frozen";
   sibling.result_workspace = sibling.workspace;
-  sibling.result_workspace->root = rows.experiments[1].selection_workspace->root / "other-attempt";
+  sibling.result_workspace->root =
+      store.game_directory / "_hockeymon/workflows/older-workflow/attempts/solve/work/candidate";
   sibling.result_workspace->game_directory = sibling.result_workspace->root / sibling.workspace.game_id;
   auto& variant = completed.experiments[3];
   variant.selection_owner_workspace_key = "sessions/session/candidate-3";

@@ -2716,16 +2716,23 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     const QByteArray config_revision = QCryptographicHash::hash(config_bytes, QCryptographicHash::Sha256);
-    if (!claim_local_operation())
+    // A selected Main still can briefly hold the game's admission lock.
+    // Drain its metadata read before Add claims the game, just as for a config edit.
+    still_preview->setSource({});
+    if (!claim_local_operation()) {
+      update_controls();
       return;
-    const auto release_when_idle = qScopeGuard([this] { release_local_operation(); });
+    }
+    const auto finish_planning = qScopeGuard([this] {
+      release_local_operation();
+      update_controls();
+    });
     auto catalog = LoadStitchingExperimentStore(*store);
     if (!catalog.ok()) {
       show_status(QString::fromStdString(catalog.status().ToString()), true);
       return;
     }
     sync_catalog_rows(*catalog);
-    update_controls();
     const QString mode = control_point_selection->currentData().toString();
     const QStringList selections = mode == "both" ? QStringList{"quality-coverage", "legacy"} : QStringList{mode};
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
