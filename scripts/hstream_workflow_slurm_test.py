@@ -76,6 +76,19 @@ class SlurmTest(unittest.TestCase):
         }
         return SimpleNamespace(stdout=values[arguments[0]])
 
+    def test_batch_worker_drops_inherited_x11_display(self):
+        slurm.submit(self.root, self.profile, ["env"], 1)
+        worker = subprocess.run(
+            [self.root / "job.sh"],
+            env={"PATH": os.defpath, "DISPLAY": ":1", "CUDA_VISIBLE_DEVICES": "3"},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        environment = dict(line.split("=", 1) for line in worker.stdout.splitlines())
+        self.assertNotIn("DISPLAY", environment)
+        self.assertEqual(environment["CUDA_VISIBLE_DEVICES"], "3")
+
     def test_lost_acceptance_is_adopted_by_exact_identity_without_resubmission(self):
         self.errors["sbatch"] = subprocess.TimeoutExpired("sbatch", 1)
         with self.assertRaises(subprocess.TimeoutExpired):
