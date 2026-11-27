@@ -740,6 +740,12 @@ deploy_node() {
   fi
 
   NODE_INSTALLED["${node}"]="${installed}"
+  if ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" \
+    sudo -n /usr/bin/python3 -I /opt/hstream/scripts/restart_workflow_controllers.py; then
+    NODE_RESULT["${node}"]="FAILED"
+    NODE_DETAIL["${node}"]="package installed; workflow controller restart or heartbeat check failed"
+    return 1
+  fi
   action="$(deployment_action \
     "${NODE_PREVIOUS[${node}]:-}" "${installed}" "${NODE_PREVIOUS_PACKAGE[${node}]:-hstream}")"
   NODE_RESULT["${node}"]="OK"

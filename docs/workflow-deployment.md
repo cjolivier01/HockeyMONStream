@@ -65,8 +65,10 @@ until it has an independent CPU read verifier; equal paths alone are insufficien
 Every Slurm target must provide the native task executable, configuration, models
 and a qualified native runtime. Setup profiles use `runtime.installation: deployed`
 and resolve the installed programs on the chosen computer for each attempt.
-`make deploy` updates what subsequent tasks execute; the operator manages running
-jobs and restarts already-loaded services. No secondary runtime copy is prepared.
+`make deploy` and `make deploy-light` update what subsequent tasks execute. After
+verifying the installed package on each target, deploy restarts active system and
+user workflow controllers that run from that package and checks each new process's
+registry heartbeat. Running attempts keep their original commands and supervisors.
 Legacy frozen profiles still name exact hashes in `runtime.files`. Qualify
 `native-batch-v1` support before admitting standalone work. Interpreter-only
 `runtime.python` profiles no longer admit Slurm work; replace them and requalify
