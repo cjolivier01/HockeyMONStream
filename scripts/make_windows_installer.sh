@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the small Windows/WSL bootstrapper on Linux with NSIS. The executable
-# contains only provisioning scripts and the application icon; Ubuntu and
-# HStream are downloaded and checksum-verified on the Windows host.
+# contains provisioning scripts, the icon and license notices. Windows
+# downloads and verifies Ubuntu and HStream during installation.
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -127,6 +127,7 @@ makensis -V2 -NOCD \
   -DICON_FILE="${icon_file}" \
   -DPOWERSHELL_SOURCE="${TOPDIR}/packaging/windows/hstream-wsl.ps1" \
   -DPOWERSHELL_SHA256="${powershell_sha256}" \
+  -DPROJECT_ROOT="${TOPDIR}" \
   -DLINUX_INSTALLER_SOURCE="${TOPDIR}/scripts/install_deb.sh" \
   "${TOPDIR}/packaging/windows/HStreamWslInstaller.nsi"
 

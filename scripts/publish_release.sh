@@ -437,7 +437,7 @@ for asset in "${staged_assets[@]}"; do
   release_assets+=("${release_dir}/${asset}")
 done
 release_assets+=("${release_dir}/SHA256SUMS")
-release_notes=$'HockeyMONStream is source-available software for stitching two sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It runs without a HockeyMONStream subscription fee on supported NVIDIA GPU hardware. The repository has mixed file-level licensing.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source and licensing](https://github.com/cjolivier01/HockeyMONStream)'
+release_notes=$'HockeyMONStream is source-available software for stitching two sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It runs without a HockeyMONStream subscription fee on supported NVIDIA GPU hardware. Original HockeyMONStream code uses GPLv3 or later by default. Third-party components and assets retain their own terms.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source and licensing](https://github.com/cjolivier01/HockeyMONStream)'
 # A reader cannot tell a deliberately reduced matrix from a broken upload, so
 # name the missing targets instead of leaving a gap in the asset list.
 if [[ "${#excluded_labels[@]}" -gt 0 ]]; then

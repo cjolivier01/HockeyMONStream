@@ -12,16 +12,18 @@ use those copies under the terms they received.
 
 ## Component licenses
 
-- The imported DeepStream-Yolo code, configuration and documentation retain
-  their [original MIT notice](third_party/DeepStream-Yolo-LICENSE.txt), including
-  the copyright notices for Marcos Luciano Piropo Santos and NVIDIA.
+- Material imported under DeepStream-Yolo's MIT license retains its
+  [original notice](third_party/DeepStream-Yolo-LICENSE.txt), including the
+  copyright notices for Marcos Luciano Piropo Santos and NVIDIA.
 - Files and components with their own terms keep those terms. Examples include
   the Apache-2.0 `dsxvideoconvert` plugin, the MIT-licensed `kmeans` library
   and the CC0 camera lens catalog.
 - NVIDIA-derived files marked `LicenseRef-NvidiaProprietary` carry NVIDIA's
   proprietary-use notice. Use and redistribution of that material require the
   applicable NVIDIA permissions. NVIDIA DeepStream and other SDKs have their
-  own license terms.
+  own license terms. The NVIDIA build also compiles proprietary source into
+  the CLI. Redistributing a combined binary requires permission for the
+  combination under all applicable licenses.
 - Third-party tools and model assets carry their own terms. In the source
   tree, model notices are under `third_party/native_model_licenses/` and
   `configs/player-models/licenses/`. Current Debian and Jetson packages

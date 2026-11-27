@@ -426,7 +426,7 @@ packaged asset must declare `redistributable: true`.
 
 The sibling `video-stitcher` repository's CUDA AKAZE implementation has the
 desired tolerance-level CPU parity, but that implementation is distributed as
-part of an AGPL-3.0 project. It is not copied or linked into this MIT project.
+part of an AGPL-3.0 project. It is not copied or linked into HockeyMONStream.
 The OpenCV implementation here independently reproduces its interoperable
 AKAZE/M-LDB/Hamming behavior. It relies on HStream's downstream control-point
 selection and robust homography fitting rather than copying video-stitcher's
