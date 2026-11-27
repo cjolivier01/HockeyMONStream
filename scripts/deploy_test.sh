@@ -721,11 +721,19 @@ superseded_with() { installer_call superseded_deepstream_packages "$1"; }
 expect_superseded() {
   local inventory="$1" expected="$2" label="$3"
   local -a found=()
-  local name summary
+  local name summary output_file
+  # Into a file, not process substitution or a command substitution ending in
+  # another command: the first loses the reader's exit status and the second
+  # replaces it, so a reader that failed and said nothing would read as one
+  # that found nothing.  A file also keeps a blank name a blank name.
   # %b: the fixtures carry dpkg's tab separator as an escape.
+  output_file="$(mktemp)"
+  printf '%b' "${inventory}" | superseded_with deepstream-9.2 >"${output_file}" \
+    || fail "${label}: the filter failed"
   while IFS= read -r name; do
     found+=("${name}")
-  done < <(printf '%b' "${inventory}" | superseded_with deepstream-9.2)
+  done <"${output_file}"
+  rm -f "${output_file}"
   summary="${#found[@]}"
   if [[ "${#found[@]}" -gt 0 ]]; then summary+=" ${found[*]}"; fi
   expect_equal "${summary}" "${expected}" "${label}"
@@ -751,6 +759,8 @@ installer_call removal_is_expected deepstream-9.1 hmstream deepstream-9.1 \
   || fail "a removal this installation asked for was not recognized"
 installer_call removal_is_expected deepstream-9.1:arm64 deepstream-9.1 \
   || fail "APT's architecture-qualified name was not matched to the bare one"
+installer_call removal_is_expected hmstream:arm64 hmstream deepstream-9.1 \
+  || fail "the package HStream replaced was not matched when APT qualified it"
 if installer_call removal_is_expected deepstream-9.10 deepstream-9.1; then
   fail "a different package was matched by a shared prefix"
 fi
@@ -912,6 +922,30 @@ Section: misc' "${transition_root}/blankfield.deb"
   expect_equal "$(dpkg-deb -f "${transition_root}/blankfield-transition.deb" Section)" \
     "misc" "the field after the empty one is left alone"
 
+  # dpkg reads a control file with CRLF endings.  The list belongs in front of
+  # the carriage return; after it, the value carries a CR in the middle.  The
+  # empty field here also makes the CR the only thing on the line, which must
+  # not read as the field already having a value.
+  make_transition_fixture 'Conflicts:
+Section: misc' "${transition_root}/crlf.deb"
+  crlf_root="${transition_root}/build/crlf"
+  sed -i 's/$/\r/' "${crlf_root}/DEBIAN/control"
+  dpkg-deb -Zzstd --build --root-owner-group "${crlf_root}" \
+    "${transition_root}/crlf.deb" >/dev/null
+  build_transition "${transition_root}/crlf.deb" "${transition_root}/crlf-transition.deb" \
+    deepstream-9.1 || fail "the installer could not rewrite a CRLF control file"
+  expect_equal "$(dpkg-deb -f "${transition_root}/crlf-transition.deb" Conflicts)" \
+    "deepstream-9.1" "a CRLF line ending does not land inside the relationship"
+  expect_equal "$(dpkg-deb -f "${transition_root}/crlf-transition.deb" Section)" \
+    "misc" "the rest of a CRLF paragraph is left alone"
+  # On the bytes, because dpkg strips a carriage return wherever it sits and
+  # would read "Conflicts:<CR> deepstream-9.1" the same way.  Other readers of
+  # this control file are not promised to.
+  mkdir "${transition_root}/crlf-control"
+  dpkg-deb -e "${transition_root}/crlf-transition.deb" "${transition_root}/crlf-control"
+  expect_equal "$(grep -a '^Conflicts' "${transition_root}/crlf-control/control" | cat -A)" \
+    'Conflicts: deepstream-9.1^M$' "the line still ends where it ended"
+
   # dpkg-deb -Znone writes control.tar and data.tar with no suffix after tar.
   make_transition_fixture 'Conflicts: libglapi-amber' "${transition_root}/plain.deb"
   dpkg-deb -Znone --build --root-owner-group "${transition_root}/build/plain" \
@@ -967,12 +1001,15 @@ Section: misc' "${transition_root}/blankfield.deb"
   # rather than listed here a second time.
   make_transition_fixture 'Conflicts: libglapi-amber, deepstream-binaries-x86 (<< 9.2), deepstream-sample-data' \
     "${transition_root}/conflicts.deb"
+  # The versioned relation in that fixture is deliberately absent: approving
+  # the name alone would approve removing a version the artifact never
+  # objected to, so the guard refuses it visibly instead.
   expect_equal "$(installer_call declared_conflicts "${transition_root}/conflicts.deb")" \
     "libglapi-amber
-deepstream-binaries-x86
-deepstream-sample-data" "the names an artifact declares a conflict with are read off it"
-  expect_equal "$(installer_call declared_conflicts "${transition_root}/bare.deb")" "" \
-    "an artifact declaring no conflict names nothing"
+deepstream-sample-data" "the unversioned names an artifact declares a conflict with are read off it"
+  bare_conflicts="$(installer_call declared_conflicts "${transition_root}/bare.deb")" \
+    || fail "reading the conflicts of an artifact that declares none failed"
+  expect_equal "${bare_conflicts}" "" "an artifact declaring no conflict names nothing"
 
   rm -rf "${transition_root}"
   trap - EXIT
