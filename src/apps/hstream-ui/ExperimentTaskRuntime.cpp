@@ -1,8 +1,10 @@
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 
 #include <QtCore/QJsonDocument>
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -37,22 +39,105 @@ QString qs(const fs::path& path) {
 QString text(const std::string& value) {
   return QString::fromStdString(value);
 }
-} // namespace
-// Preserve native stdout records verbatim. The outer supervisor combines both
-// descriptors, so identify diagnostic lines here while their source is known.
-void forward_job_output(QProcess& process) {
-  process.setProcessChannelMode(QProcess::ForwardedOutputChannel);
-  QObject::connect(&process, &QProcess::readyReadStandardError, &process, [&process, line_start = true]() mutable {
-    const QByteArray bytes = process.readAllStandardError();
+// All writes to the combined job log pass through this relay. In particular,
+// delayed stderr cannot arrive inside a fragmented HSTREAM_ stdout record.
+class JobOutput {
+ public:
+  explicit JobOutput(QProcess& process) : process_(process) {}
+
+  void stdoutReady(bool finished = false) {
+    static const QByteArray marker("HSTREAM_");
+    while (process_.bytesAvailable()) {
+      const auto prefix = process_.peek(marker.size());
+      const bool record = spill_ || (stdout_start_ && (prefix.startsWith(marker) || marker.startsWith(prefix)));
+      const bool complete = !record || finished || process_.canReadLine();
+      if (record && !complete && process_.bytesAvailable() <= kBlock)
+        return;
+      const QByteArray part = process_.readLine(kBlock);
+      if (record && (!complete || spill_ || (!part.endsWith('\n') && process_.bytesAvailable()))) {
+        // Large graphs can cross pipe reads. Spill just this unfinished record,
+        // keeping live diagnostics flowing without buffering the job in memory.
+        if (!spill_)
+          spill_.reset(std::tmpfile());
+        if (!spill_ || std::fwrite(part.constData(), 1, part.size(), spill_.get()) != size_t(part.size())) {
+          captureError();
+          return;
+        }
+        if (!part.endsWith('\n') && !(finished && !process_.bytesAvailable()))
+          continue;
+        flushRecord();
+      } else {
+        endStderrFragment();
+        std::fwrite(part.constData(), 1, part.size(), stdout);
+      }
+      stdout_start_ = part.endsWith('\n');
+      visible_stdout_fragment_ = !stdout_start_;
+      std::fflush(stdout);
+    }
+    if (finished && spill_)
+      flushRecord();
+  }
+
+  void stderrReady() {
     QByteArray tagged;
+    const auto bytes = process_.readAllStandardError();
+    if (visible_stdout_fragment_ && !bytes.isEmpty()) {
+      tagged.append('\n');
+      visible_stdout_fragment_ = false;
+    }
     for (char byte : bytes) {
-      if (line_start && byte != '\n' && byte != '\r')
+      if (stderr_start_ && byte != '\n' && byte != '\r')
         tagged.append("[stderr] ");
       tagged.append(byte);
-      line_start = byte == '\n' || byte == '\r';
+      stderr_start_ = byte == '\n' || byte == '\r';
     }
     std::fwrite(tagged.constData(), 1, tagged.size(), stderr);
     std::fflush(stderr);
+  }
+
+ private:
+  void endStderrFragment() {
+    if (!stderr_start_) {
+      std::fputc('\n', stderr);
+      std::fflush(stderr);
+      stderr_start_ = true;
+    }
+  }
+  void flushRecord() {
+    endStderrFragment();
+    std::array<char, kBlock> buffer;
+    if (std::fseek(spill_.get(), 0, SEEK_SET) != 0) {
+      captureError();
+      return;
+    }
+    while (const auto size = std::fread(buffer.data(), 1, buffer.size(), spill_.get()))
+      std::fwrite(buffer.data(), 1, size, stdout);
+    if (std::ferror(spill_.get()))
+      captureError();
+    spill_.reset();
+    std::fflush(stdout);
+  }
+  void captureError() {
+    std::fputs("\n[stderr] ERROR: Cannot retain native protocol record in job output\n", stderr);
+    process_.kill();
+  }
+
+  static constexpr int kBlock = 64 * 1024;
+  QProcess& process_;
+  bool stdout_start_ = true;
+  bool visible_stdout_fragment_ = false;
+  bool stderr_start_ = true;
+  std::unique_ptr<FILE, decltype(&std::fclose)> spill_{nullptr, &std::fclose};
+};
+} // namespace
+
+void forward_job_output(QProcess& process) {
+  process.setProcessChannelMode(QProcess::SeparateChannels);
+  const auto output = std::make_shared<JobOutput>(process);
+  QObject::connect(&process, &QProcess::readyReadStandardOutput, &process, [output] { output->stdoutReady(); });
+  QObject::connect(&process, &QProcess::readyReadStandardError, &process, [output] { output->stderrReady(); });
+  QObject::connect(&process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), &process, [output] {
+    output->stdoutReady(true);
   });
 }
 

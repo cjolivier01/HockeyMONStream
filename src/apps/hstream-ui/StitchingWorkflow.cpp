@@ -675,6 +675,7 @@ struct StitchingWorkflow::Impl {
   uint64_t request_generation{0};
   int retry_epoch{-1};
   bool log_pending{false};
+  quint64 log_generation{0};
   QPointer<LogTextEdit> log_view;
   QString log_source;
   void showMonitor(bool visible) {
@@ -1285,13 +1286,17 @@ struct StitchingWorkflow::Impl {
     const auto selected_attempt = attempt->currentData().toString();
     const auto source = selected_workflow + "/" + selected_stage + "/" + selected_attempt;
     log_view->window()->setWindowTitle("Workflow stage log — " + stageLabel(selectedNode()));
-    if (!owner->hasSelection() || attempt->currentData().toString().isEmpty()) {
+    const bool changed = log_source != source;
+    if (changed) {
       log_source = source;
+      ++log_generation;
+      log_pending = false;
+    }
+    if (!owner->hasSelection() || selected_attempt.isEmpty()) {
       setLogContents("No attempt log is available.\n\n" + details->toPlainText(), source);
       return;
     }
-    if (log_source != source) {
-      log_source = source;
+    if (changed) {
       setLogContents(details->toPlainText() + "\n\nLoading attempt log…", source);
     }
     if (log_pending)
@@ -1299,7 +1304,10 @@ struct StitchingWorkflow::Impl {
     log_pending = true;
     call(
         {"log", "--workflow", workflow, "--stage", selected_stage, "--attempt", selected_attempt},
-        [this, selected_workflow, selected_stage, selected_attempt](QJsonObject value, QString error) {
+        [this, selected_workflow, selected_stage, selected_attempt, generation = log_generation](
+            QJsonObject value, QString error) {
+          if (generation != log_generation)
+            return;
           log_pending = false;
           if (!log_view)
             return;

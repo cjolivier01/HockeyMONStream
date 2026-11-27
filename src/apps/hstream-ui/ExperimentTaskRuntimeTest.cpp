@@ -166,6 +166,16 @@ int main(int argc, char** argv) {
         {"-c", "printf 'HSTREAM_RECORD ok\\n'; printf decoder >&2; sleep .1; printf ' ready\\nwarning\\rpartial' >&2"});
     return job.waitForFinished() ? job.exitCode() : 1;
   }
+  if (argc == 2 && std::string(argv[1]) == "--interleave") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c",
+         "printf HST; sleep .05; printf REAM_GRAPH; head -c 140000 /dev/zero | tr '\\0' x; "
+         "printf interrupted >&2; sleep .05; printf ' end\\n'"});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
   char pattern[] = "/tmp/hstream-retained-frames-XXXXXX";
   const char* directory = mkdtemp(pattern);
   if (!directory)
@@ -179,6 +189,13 @@ int main(int argc, char** argv) {
     require(
         capture.readAllStandardError() == "[stderr] decoder ready\n[stderr] warning\r[stderr] partial",
         "Fragmented or trailing job stderr lost its stream identity");
+    capture.setProcessChannelMode(QProcess::MergedChannels);
+    capture.start(argv[0], {"--interleave"});
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot read interleaved experiment logs");
+    const QByteArray merged = capture.readAllStandardOutput();
+    require(
+        merged.contains("[stderr] interrupted\nHSTREAM_GRAPH" + QByteArray(140000, 'x') + " end\n"),
+        "Delayed stderr split a native stdout protocol record");
     run(root);
     fs::remove_all(root);
     std::cout << "Retained selected-frame materialization checks passed\n";

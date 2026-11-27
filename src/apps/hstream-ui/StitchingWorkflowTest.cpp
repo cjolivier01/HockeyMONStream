@@ -298,7 +298,7 @@ elif operation in ('cancel','retry'):
 elif operation=='log':
  value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
  if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
- if (root/'hold-log-response').exists():
+ if (root/'hold-log-response').exists() and option('--attempt')=='attempt-current':
   (root/'log-request-started').write_text(option('--stage'))
   while (root/'hold-log-response').exists(): time.sleep(.01)
 else: raise SystemExit(9)
@@ -1389,12 +1389,14 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(
       log->window()->windowTitle().contains(other_node.value("label").toString()) &&
           log->toPlainText().contains("Diagnostics for the newly selected stage") &&
-          log->toPlainText().endsWith("Loading attempt log…") &&
+          (log->toPlainText().endsWith("Loading attempt log…") ||
+           log->toPlainText().endsWith("attempt-other retained log")) &&
           !log->toPlainText().contains("attempt-current retained log"),
       "Stage selection displayed the previous log under a new title while its request was pending");
-  QFile::remove(root + "/hold-log-response");
   require(
-      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }), "New stage log did not load");
+      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }),
+      "An outstanding request for the old attempt blocked the new stage log");
+  QFile::remove(root + "/hold-log-response");
   require(
       !log->toPlainText().contains("attempt-current retained log"), "Late response replaced the selected stage log");
   QFile::remove(root + "/log-request-started");

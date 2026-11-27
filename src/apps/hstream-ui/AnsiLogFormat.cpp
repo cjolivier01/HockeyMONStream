@@ -181,8 +181,9 @@ QString log_message_color(const QString& text, bool stderr_output, bool dark_bac
 QString stage_log_line_html(const QString& line, bool dark_background) {
   const bool stderr_output = line.startsWith("[stderr] ");
   const QString message = stderr_output ? line.mid(9) : line;
-  QString color = log_message_color(message, stderr_output, dark_background);
-  if (message.trimmed().startsWith("**PERF:"))
+  const auto severity = classify_log_message(message, stderr_output);
+  QString color = severity_color(severity, dark_background);
+  if ((severity == LogSeverity::kInfo || severity == LogSeverity::kDetail) && message.trimmed().startsWith("**PERF:"))
     color = ansi_color(36, dark_background);
   const QString body = ansi_to_html(line, dark_background);
   return "<span style=\"white-space:pre-wrap" + (color.isEmpty() ? QString() : ";color:" + color) + "\">" + body +
