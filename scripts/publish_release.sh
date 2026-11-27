@@ -16,7 +16,9 @@ Usage: scripts/publish_release.sh [--dry-run] [--exclude=PLATFORMS]
 
 Builds Ubuntu 24.04 amd64, Ubuntu 26.04 amd64, Jetson Ubuntu 24.04 arm64, and
 Windows WSL packages. The first release is v0.1.0; later releases increment the
-patch component of the highest existing strict vMAJOR.MINOR.PATCH tag.
+patch component of the highest strict vMAJOR.MINOR.PATCH tag on origin. Tags
+that exist only in the local clone do not advance that number, but they do
+block publication until they are removed.
 
 --exclude takes a comma- or space-separated list of platforms to leave out of
 the release, for building a release when one target's hardware or toolchain is
@@ -83,6 +85,41 @@ resolve_release_platforms() {
     return 1
   fi
   printf '%s\n' "${included[@]}"
+}
+
+# Set while a release tag exists locally but has not reached the remote yet.
+unpushed_release_tag=""
+
+remove_unpushed_release_tag() {
+  [[ -n "${unpushed_release_tag}" ]] || return 0
+  git tag -d "${unpushed_release_tag}" >/dev/null 2>&1 || true
+  unpushed_release_tag=""
+}
+
+# Create the release tag and push it, removing the local tag again if anything
+# between the two ends this process. An unpushed tag left behind blocks every
+# later publish without ever advancing the version: the next number comes from
+# the remote, so a local-only tag is never counted and always collides.
+# Signals need handlers of their own because a bash INT handler returns to the
+# interrupted command instead of ending the script.
+push_release_tag() {
+  local release_tag="$1" source_revision="$2" remote="$3"
+  trap remove_unpushed_release_tag EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  # Claimed before the tag exists: between these two the window is a single
+  # failed command, and deleting a tag that was never created is harmless.
+  unpushed_release_tag="${release_tag}"
+  git tag -a "${release_tag}" "${source_revision}" -m "HockeyMONStream ${release_tag}"
+  if ! git push "${remote}" "refs/tags/${release_tag}"; then
+    remove_unpushed_release_tag
+    trap - EXIT INT TERM
+    return 1
+  fi
+  # On the remote now, so it has to survive a later failure: the release can
+  # then be finished by hand or deleted deliberately.
+  unpushed_release_tag=""
+  trap - EXIT INT TERM
 }
 
 # Let the test source the platform selection without running a release.
@@ -281,10 +318,31 @@ if [[ "${source_revision}" != "${remote_revision}" ]]; then
   echo "  origin/${default_branch}: ${remote_revision}" >&2
   exit 1
 fi
-if git show-ref --verify --quiet "refs/tags/${release_tag}" ||
-   git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1 ||
-   gh release view "${release_tag}" --repo "${repository}" >/dev/null 2>&1; then
-  echo "ERROR: release tag already exists: ${release_tag}" >&2
+# The next version comes from origin alone, so a tag that exists anywhere else
+# collides without ever advancing the number. The three places it can exist
+# have three unrelated causes and three different fixes, so report the one that
+# actually fired rather than the bare collision. Checked from most to least
+# published: a release implies its tag, and a pushed tag outlives a release
+# creation that failed after it.
+if gh release view "${release_tag}" --repo "${repository}" >/dev/null 2>&1; then
+  echo "ERROR: ${release_tag} is already published at ${repository}." >&2
+  echo "Nothing to retry here. Publishing resumes once origin's newest tag is this one," >&2
+  echo "which it is not; run 'git ls-remote --tags origin' to see what origin actually has." >&2
+  exit 1
+fi
+if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+  echo "ERROR: tag ${release_tag} is already on origin, but ${repository} has no release for it." >&2
+  echo "An earlier run pushed the tag and then failed to create the release." >&2
+  echo "Finish that release by hand, or drop the tag and start over with:" >&2
+  echo "  make delete-release RELEASE_TAG=${release_tag}" >&2
+  exit 1
+fi
+if git show-ref --verify --quiet "refs/tags/${release_tag}"; then
+  stray_commit="$(git rev-parse --short "refs/tags/${release_tag}^{commit}" 2>/dev/null || echo "unknown commit")"
+  echo "ERROR: tag ${release_tag} exists in this clone only, on neither origin nor ${repository}." >&2
+  echo "An interrupted publish left it behind, pointing at ${stray_commit}." >&2
+  echo "Delete it and retry; the replacement will tag HEAD, $(git rev-parse --short HEAD):" >&2
+  echo "  git tag -d ${release_tag}" >&2
   exit 1
 fi
 if [[ -e "${release_dir}" ]]; then
@@ -425,9 +483,7 @@ if [[ "${new_latest_tag}" != "${latest_tag}" ]] ||
   exit 1
 fi
 
-git tag -a "${release_tag}" "${source_revision}" -m "HockeyMONStream ${release_tag}"
-if ! git push origin "refs/tags/${release_tag}"; then
-  git tag -d "${release_tag}" >/dev/null
+if ! push_release_tag "${release_tag}" "${source_revision}" origin; then
   echo "ERROR: could not push release tag ${release_tag}." >&2
   exit 1
 fi

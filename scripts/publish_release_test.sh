@@ -71,6 +71,58 @@ for platform in "${RELEASE_PLATFORMS[@]}"; do
     || fail "no release-notes label for platform '${platform}'"
 done
 
+# Publishing the tag is two steps, and anything that ends the process between
+# them leaves a tag the next run cannot get past: the version comes from the
+# remote, so a local-only tag is never counted but still collides.
+tag_repo="$(mktemp -d "${TEST_TMPDIR:-/tmp}/publish-tag-XXXXXX")"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+work="${tag_repo}/work"
+git init --quiet --bare "${tag_repo}/remote.git"
+git init --quiet "${work}"
+git -C "${work}" config user.email "release-test@example.com"
+git -C "${work}" config user.name "Release Test"
+git -C "${work}" commit --quiet --allow-empty -m "base commit"
+work_head="$(git -C "${work}" rev-parse HEAD)"
+
+expect_no_tag() {
+  local tag="$1" label="$2"
+  if git -C "${work}" rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+    fail "${label}: ${tag} was left behind in the local clone"
+  fi
+}
+
+# An unreachable remote: the push fails on its own.
+( cd "${work}" && push_release_tag v9.9.9 "${work_head}" "${tag_repo}/missing.git" ) \
+  && fail "push_release_tag reported success against an unreachable remote"
+expect_no_tag v9.9.9 "a failed push"
+
+# Interrupted mid-push, which is how the tag survived before: the old code
+# only cleaned up when git push returned a failing status.
+interrupt_status=0
+(
+  cd "${work}"
+  git() {
+    if [[ "${1:-}" == "push" ]]; then
+      kill -INT "${BASHPID}"
+      sleep 10
+    fi
+    command git "$@"
+  }
+  push_release_tag v9.9.8 "${work_head}" "${tag_repo}/remote.git"
+) || interrupt_status=$?
+expect_equal "${interrupt_status}" "130" "an interrupted push exits on the signal"
+expect_no_tag v9.9.8 "an interrupted push"
+
+# The cleanup must not reach a tag that already made it to the remote; that
+# one has to survive for the release to be finished or deleted deliberately.
+( cd "${work}" && push_release_tag v9.9.7 "${work_head}" "${tag_repo}/remote.git" ) \
+  || fail "push_release_tag failed against a reachable remote"
+git -C "${work}" rev-parse -q --verify refs/tags/v9.9.7 >/dev/null \
+  || fail "a pushed release tag was deleted from the local clone"
+git -C "${tag_repo}/remote.git" rev-parse -q --verify refs/tags/v9.9.7 >/dev/null \
+  || fail "the release tag never reached the remote"
+rm -rf "${tag_repo}"
+
 # Stage a Jetson-excluded release the way the publisher does and check that
 # what it hashes is exactly what it uploads, with no stray glob. The staging
 # directory carries an ampersand on purpose: "${staged_assets[@]/#/${dir}/}"
