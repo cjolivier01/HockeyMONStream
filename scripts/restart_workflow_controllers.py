@@ -12,8 +12,8 @@ SCRIPTS = Path(__file__).resolve().parent
 # Deploy invokes this file with isolated Python, including for the heartbeat check.
 sys.path.insert(0, str(SCRIPTS))
 from hstream_workflow.files import read_json
-from hstream_workflow.processes import same_process
-from hstream_workflow.schema import WorkflowError
+from hstream_workflow.processes import host_identity, process_identity, same_process
+from hstream_workflow.schema import WorkflowError, positive
 
 
 def running_services(manager):
@@ -53,16 +53,25 @@ def controller_registry(process):
         return None
     for index, arg in enumerate(args):
         if arg == "--registry" and index + 1 < len(args):
-            return Path(args[index + 1])
+            return (process / "cwd").resolve() / args[index + 1]
         if arg.startswith("--registry="):
-            return Path(arg.split("=", 1)[1])
+            return (process / "cwd").resolve() / arg.split("=", 1)[1]
     raise ValueError(f"Missing registry in {process}/cmdline")
 
 
 def wait_for_heartbeat(registry, pid):
-    timeout = read_json(registry / "config.json")["defaults"]["command_timeout_seconds"]
+    identity = process_identity(pid)
+    if not identity:
+        raise RuntimeError(f"Replacement PID {pid} exited")
+    identity.update(host_identity())
+    timeout = positive(
+        read_json(registry / "config.json")["defaults"]["command_timeout_seconds"],
+        "command_timeout_seconds",
+    )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if not same_process(identity):
+            raise RuntimeError(f"Replacement PID {pid} exited")
         try:
             heartbeat = read_json(registry / "heartbeat.json")
             if heartbeat.get("pid") == pid and same_process(heartbeat):
@@ -80,6 +89,23 @@ def main_pid(manager, unit):
             [*manager, "show", "-p", "MainPID", "--value", "--", unit], text=True
         )
     )
+
+
+def startup_timeout():
+    # Bound even a blocked registry read by the host system manager's startup budget.
+    output = subprocess.check_output(
+        [
+            "busctl",
+            "--system",
+            "get-property",
+            "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager",
+            "DefaultTimeoutStartUSec",
+        ],
+        text=True,
+    )
+    return int(output.split()[1]) / 1_000_000
 
 
 def restart_controller(manager, service, manager_uid=None):
@@ -114,6 +140,7 @@ def restart_controller(manager, service, manager_uid=None):
         user=owner.pw_uid,
         group=owner.pw_gid,
         extra_groups=os.getgrouplist(owner.pw_name, owner.pw_gid),
+        timeout=startup_timeout(),
         check=True,
     )
     if main_pid(manager, unit) != new_pid:
@@ -150,7 +177,7 @@ def restart_services():
                 OSError,
                 ValueError,
                 RuntimeError,
-                subprocess.CalledProcessError,
+                subprocess.SubprocessError,
             ) as exc:
                 errors.append(f"{service['Id']}: {exc}")
     if errors:

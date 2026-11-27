@@ -40,6 +40,17 @@ class RestartControllersTest(unittest.TestCase):
                             deploy.controller_registry(process),
                             Path(command[-1]) if expected else None,
                         )
+                for relative in [["--registry", "registry"], ["--registry=registry"]]:
+                    (process / "cmdline").write_bytes(
+                        os.fsencode(
+                            "\0".join(
+                                ["python3", "hstream-workflow", "serve", *relative]
+                            )
+                        )
+                    )
+                    self.assertEqual(
+                        deploy.controller_registry(process), package / "registry"
+                    )
                 (process / "cwd").unlink()
                 (process / "cwd").symlink_to(process)
                 (process / "cmdline").write_bytes(
@@ -80,6 +91,8 @@ class RestartControllersTest(unittest.TestCase):
         ), patch.object(
             deploy, "main_pid", side_effect=[0, pid + 1, pid, pid]
         ), patch.object(
+            deploy, "startup_timeout", return_value=90
+        ), patch.object(
             subprocess, "run"
         ) as run:
             deploy.restart_controller(manager, service)
@@ -89,6 +102,7 @@ class RestartControllersTest(unittest.TestCase):
                 run.call_args_list[0].args[0],
                 [*manager, "try-restart", "--", service["Id"]],
             )
+            self.assertEqual(run.call_args_list[1].kwargs["timeout"], 90)
             self.assertEqual(
                 run.call_args_list[1].args[0][-3:],
                 ["--heartbeat", str(registry), str(pid)],
@@ -102,6 +116,16 @@ class RestartControllersTest(unittest.TestCase):
             identity = {**host_identity(), **process_identity(pid)}
             write_json(registry / "config.json", config)
             write_json(registry / "heartbeat.json", {**identity, "start_time": 0})
+            with patch.object(
+                deploy,
+                "read_json",
+                return_value={"defaults": {"command_timeout_seconds": float("inf")}},
+            ):
+                with self.assertRaisesRegex(ValueError, "command_timeout_seconds"):
+                    deploy.wait_for_heartbeat(registry, pid)
+            with patch.object(deploy, "same_process", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "exited"):
+                    deploy.wait_for_heartbeat(registry, pid)
             with patch.object(
                 deploy.time, "monotonic", side_effect=[0, 0, 2]
             ), patch.object(deploy.time, "sleep"):
