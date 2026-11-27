@@ -1105,4 +1105,29 @@ for script in deploy.sh make_deb.sh make_deb_jetson.sh; do
     "${script} rejects invalid Qt options before repository, SSH or package operations"
 done
 
+(
+  NODE_TARGET[test]=desktop-test
+  TARGET_DEB[desktop-test]=/test.deb
+  TARGET_INSTALLER[desktop-test]=/installer
+  PACKAGE_VERSION_NORMALIZED=1.2.3
+  SSH_CONNECT_TIMEOUT=5
+  deploy_desktop() { return 0; }
+  query_installed_version() { echo "${installed_version}"; }
+  ssh() {
+    [[ "${*: -6}" == "test sudo -n /usr/bin/python3 -I /opt/hstream/scripts/restart_workflow_controllers.py" ]] || fail "incorrect restart invocation"
+    invoked=1
+    return "${restart_status}"
+  }
+  installed_version=old invoked=0 restart_status=0
+  if deploy_node test; then fail "version mismatch accepted"; fi
+  expect_equal "${invoked}" 0 "version mismatch skips restart"
+  installed_version=1.2.3 restart_status=1
+  if deploy_node test; then fail "failed restart accepted"; fi
+  expect_equal "${NODE_RESULT[test]}" FAILED "failed restart marks node failed"
+  restart_status=0 invoked=0
+  deploy_node test
+  expect_equal "${invoked}" 1 "verified package restarts running controllers"
+  expect_equal "${NODE_RESULT[test]}" OK "verified restart completes deployment"
+)
+
 echo "deploy_test: PASS"

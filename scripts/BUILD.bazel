@@ -247,6 +247,14 @@ sh_test(
     ],
 )
 
+py_test(
+    name = "restart_workflow_controllers_test",
+    size = "small",
+    srcs = ["restart_workflow_controllers.py", "restart_workflow_controllers_test.py"],
+    main = "restart_workflow_controllers_test.py",
+    deps = [":workflow_library"],
+)
+
 sh_test(
     name = "publish_release_test",
     size = "small",

@@ -1155,6 +1155,7 @@ chmod 0755 "${STAGING}/DEBIAN/postinst"
 install -d -m 0755 "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow"
 install -m 0644 "${TOPDIR}/scripts/hstream_workflow/"*.py "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow/"
 install -m 0755 "${TOPDIR}/scripts/hstream-workflow" "${STAGING}${INSTALL_PREFIX}/scripts/hstream-workflow"
+install -m 0644 "${TOPDIR}/scripts/restart_workflow_controllers.py" "${STAGING}${INSTALL_PREFIX}/scripts/"
 install -m 0755 "${TOPDIR}/scripts/install_workflow_services.py" "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py"
 ln -s "${INSTALL_PREFIX}/scripts/hstream-workflow" "${STAGING}/usr/bin/hstream-workflow"
 ln -s "${INSTALL_PREFIX}/bin/hstream-experiment-task" "${STAGING}/usr/bin/hstream-experiment-task"
@@ -1537,6 +1538,7 @@ unexpected_python_file="$(find "${STAGING}${INSTALL_PREFIX}" -type f \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/quantize_detector_onnx.py" \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/benchmark_model_precision.py" \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/restart_workflow_controllers.py" \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow/*.py" \
   -print -quit)"
 if [[ -n "${unexpected_python_file}" ]]; then
