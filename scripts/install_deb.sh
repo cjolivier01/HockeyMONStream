@@ -1335,6 +1335,12 @@ if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
     expected_removals+=("${conflicting_package}")
   done < <(declared_conflicts "${DEEPSTREAM_DEB}")
 fi
+# A host with APT::Get::Purge set turns these removals into purges, so both
+# verbs are read or the guard judges nothing at all there.  The list is read
+# in a checked assignment rather than a process substitution, whose exit
+# status bash discards: a parser that failed would hand the loop no records,
+# and a guard that reads no records lets everything through.
+planned_removals="$(awk '$1 == "Remv" || $1 == "Purg" {print $2}' <<<"${simulation}")"
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
   allowed=0
@@ -1343,9 +1349,7 @@ while read -r removed_package; do
     echo "ERROR: this installation would remove dependent package ${removed_package}; refusing." >&2
     exit 1
   fi
-  # A host with APT::Get::Purge set turns these removals into purges, so the
-  # guard has to read both verbs or it judges nothing at all on that host.
-done < <(awk '$1 == "Remv" || $1 == "Purg" {print $2}' <<<"${simulation}")
+done <<<"${planned_removals}"
 
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   # The assignment above already failed the installation if APT could not
