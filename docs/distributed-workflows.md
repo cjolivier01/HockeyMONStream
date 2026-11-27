@@ -123,7 +123,10 @@ for the latest attempt, including the live combined job output. Choose an older
 attempt in the monitor to inspect its history. While viewing the latest attempt,
 the log follows a retry. New experiment jobs label child stderr before capture.
 Warnings, errors, successful messages and PERF lines are colored in retained
-logs as well. Older merged logs lack per-stream labels. Stages that failed before an attempt still show their failure reason.
+logs as well. Older merged logs lack per-stream labels. The viewer requests the
+latest 1 MiB of job output. If a native protocol record exceeds the standalone
+worker’s 8 MiB log segment, the runner emits a warning and forwards its bytes as
+labeled stdout chunks. Stages that failed before an attempt still show their failure reason.
 The workflow details and log windows follow new output at the bottom. Scrolling
 up pauses following; returning to the bottom resumes it. Unchanged status polls
 preserve text selection and scroll position. A successful frame selection

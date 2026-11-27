@@ -186,6 +186,17 @@ int main(int argc, char** argv) {
          "printf '\\nHSTREAM_NEXT ok\\n'"});
     return job.waitForFinished() ? job.exitCode() : 1;
   }
+  if (argc == 3 && std::string(argv[1]) == "--hold-prefix") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c",
+         "printf 'progress\\nHST'; while [ ! -f \"$1\" ]; do sleep .02; done; printf 'REAM_OK\\n'",
+         "sh",
+         argv[2]});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
   char pattern[] = "/tmp/hstream-retained-frames-XXXXXX";
   const char* directory = mkdtemp(pattern);
   if (!directory)
@@ -215,6 +226,15 @@ int main(int argc, char** argv) {
             !large.contains("\nHSTREAM_LARGE") && large.endsWith("\nHSTREAM_NEXT ok\n") &&
             large.mid(large.indexOf("[stdout] ")).count('x') == 9000000,
         "Oversize record escaped its bound, lost output or swallowed the next protocol line");
+    const auto resume = root / "resume";
+    capture.start(argv[0], {"--hold-prefix", QString::fromStdString(resume.string())});
+    const bool live = capture.waitForReadyRead(5000);
+    const auto progress = capture.readAllStandardOutput();
+    write_bytes(resume, "");
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot finish fragmented prefix fixture");
+    require(
+        live && progress == "progress\n" && capture.readAllStandardOutput() == "HSTREAM_OK\n",
+        "A partial protocol prefix delayed an earlier stdout line");
     run(root);
     fs::remove_all(root);
     std::cout << "Retained selected-frame materialization checks passed\n";

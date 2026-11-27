@@ -51,7 +51,7 @@ class JobOutput {
       if (stdout_start_) {
         const auto prefix = process_.peek(marker.size());
         if (!finished && prefix.size() < marker.size() && marker.startsWith(prefix))
-          return;
+          break;
         record_ = prefix.startsWith(marker);
       }
       const QByteArray part = process_.readLine(kBlock);
