@@ -714,9 +714,7 @@ void run_process(
   QProcess process;
   process.setWorkingDirectory(directory);
   process.setProcessEnvironment(environment);
-  // The outer supervisor bounds logs and owns every descendant, including
-  // plugin helpers. Forwarding prevents QProcess accumulating pipeline logs.
-  process.setProcessChannelMode(QProcess::ForwardedChannels);
+  hm::experiment::forward_job_output(process);
   process.start(program, arguments);
   require(process.waitForStarted(5000), "Could not start native experiment process");
   auto stopped_at = std::chrono::steady_clock::time_point::max();

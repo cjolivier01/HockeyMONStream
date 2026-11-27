@@ -1307,9 +1307,6 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   detail_poll.restart();
   require(wait([&] { return detail_poll.elapsed() > 400; }), "Node log polling stalled");
   require(log_window->isVisible(), "Workflow polling dismissed the node log");
-  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
-  if (!log_screenshot.isEmpty())
-    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
   write(root + "/state.json", QJsonDocument(original_state).toJson());
   pane->showLog();
   require(
@@ -1331,6 +1328,19 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   update_log("Initial tail\n");
   require(
       log_scroll->maximum() > 0 && log_scroll->value() == log_scroll->maximum(), "Workflow log did not open at tail");
+  update_log("Job started\n[stderr] Decoder detail\n**PERF: 42 fps\nWARNING: frame late\nlibpng error: IDAT CRC\n");
+  const auto color = [&](const QString& sample) {
+    const auto cursor = log->document()->find(sample);
+    require(!cursor.isNull(), "Stage output lost text");
+    return cursor.charFormat().foreground().color();
+  };
+  require(
+      color("Decoder detail") != color("Job started") && color("WARNING: frame late") != color("Decoder detail") &&
+          color("libpng error") != color("WARNING: frame late") && color("**PERF:") != color("Job started"),
+      "Stage log lost its stream or severity colors");
+  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
+  if (!log_screenshot.isEmpty())
+    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
   update_log("New tail\n");
   require(log_scroll->value() == log_scroll->maximum(), "Workflow polling lost tail following");
   log_scroll->setValue(30);
@@ -1432,6 +1442,10 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
             .contains("attempt-current retained log");
       }),
       "Old attempt log selection was lost");
+  widget<QToolButton>(*graph, qPrintable("stitchWorkflowNodeLog_" + first_id))->click();
+  require(
+      wait([&] { return log->toPlainText().contains("attempt-retry retained log"); }),
+      "Reopening the document icon kept an earlier attempt");
   const auto id = pane->workflowId();
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SCREENSHOT");
   if (!screenshot.isEmpty())

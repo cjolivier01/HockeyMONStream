@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 #include "src/apps/hstream-ui/LogTextEdit.h"
 #include "src/apps/hstream-ui/WorkflowSetupDialog.h"
@@ -1138,6 +1139,7 @@ struct StitchingWorkflow::Impl {
   }
   void chooseStage() {
     const auto previous = attempt->currentData().toString();
+    const bool following_latest = attempt->currentIndex() == attempt->count() - 1;
     QSignalBlocker blocker(attempt);
     attempt->clear();
     const auto node = selectedNode();
@@ -1150,7 +1152,7 @@ struct StitchingWorkflow::Impl {
           saved.value("id").toString());
     }
     const int old = attempt->findData(previous);
-    attempt->setCurrentIndex(old >= 0 ? old : attempt->count() - 1);
+    attempt->setCurrentIndex(old >= 0 && !following_latest ? old : attempt->count() - 1);
     graph->showStages(snapshot.value("nodes").toArray(), stage->currentData().toString());
     renderDetails();
     if (log_view)
@@ -1271,6 +1273,10 @@ struct StitchingWorkflow::Impl {
       render(std::move(result));
     });
   }
+  void setLogContents(const QString& text, const QString& source) {
+    const bool dark = log_view->palette().color(QPalette::Base).lightness() < 128;
+    log_view->setLogText(text, source, [dark](const QString& line) { return hm::ui::stage_log_line_html(line, dark); });
+  }
   void loadLog() {
     if (!log_view)
       return;
@@ -1281,12 +1287,12 @@ struct StitchingWorkflow::Impl {
     log_view->window()->setWindowTitle("Workflow stage log — " + stageLabel(selectedNode()));
     if (!owner->hasSelection() || attempt->currentData().toString().isEmpty()) {
       log_source = source;
-      log_view->setLogText("No attempt log is available.\n\n" + details->toPlainText(), source);
+      setLogContents("No attempt log is available.\n\n" + details->toPlainText(), source);
       return;
     }
     if (log_source != source) {
       log_source = source;
-      log_view->setLogText(details->toPlainText() + "\n\nLoading attempt log…", source);
+      setLogContents(details->toPlainText() + "\n\nLoading attempt log…", source);
     }
     if (log_pending)
       return;
@@ -1302,7 +1308,7 @@ struct StitchingWorkflow::Impl {
             loadLog();
             return;
           }
-          log_view->setLogText(
+          setLogContents(
               details->toPlainText() + "\n\n" + (error.isEmpty() ? value.value("text").toString() : error),
               workflow + "/" + selected_stage + "/" + selected_attempt);
         });
@@ -1534,6 +1540,7 @@ StitchingWorkflow::StitchingWorkflow(
   s.graph->selected = [&s](const QString& id) { s.stage->setCurrentIndex(s.stage->findData(id)); };
   s.graph->logRequested = [this, &s](const QString& id) {
     s.stage->setCurrentIndex(s.stage->findData(id));
+    s.attempt->setCurrentIndex(s.attempt->count() - 1);
     showLog();
   };
   connect(s.observer, &QPushButton::clicked, this, [&s] {

@@ -2,6 +2,7 @@
 
 #include <QtCore/QJsonDocument>
 #include <cmath>
+#include <cstdio>
 #include <set>
 #include <stdexcept>
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -37,6 +38,24 @@ QString text(const std::string& value) {
   return QString::fromStdString(value);
 }
 } // namespace
+// Preserve native stdout records verbatim. The outer supervisor combines both
+// descriptors, so identify diagnostic lines here while their source is known.
+void forward_job_output(QProcess& process) {
+  process.setProcessChannelMode(QProcess::ForwardedOutputChannel);
+  QObject::connect(&process, &QProcess::readyReadStandardError, &process, [&process, line_start = true]() mutable {
+    const QByteArray bytes = process.readAllStandardError();
+    QByteArray tagged;
+    for (char byte : bytes) {
+      if (line_start && byte != '\n' && byte != '\r')
+        tagged.append("[stderr] ");
+      tagged.append(byte);
+      line_start = byte == '\n' || byte == '\r';
+    }
+    std::fwrite(tagged.constData(), 1, tagged.size(), stderr);
+    std::fflush(stderr);
+  });
+}
+
 void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
   for (const auto& entry : overlay) {
     const auto key = entry.first.as<std::string>();

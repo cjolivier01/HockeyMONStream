@@ -119,8 +119,11 @@ even when their control-point budgets differ. A running solve keeps the
 For a failed stage, select its node and attempt in the workflow pane. The
 reason includes scheduler status and a bounded tail of the native task log when
 available. Each node's document icon opens a persistent, scrollable stage log
-with those diagnostics and the longer attempt output; it stays open until
-closed. Stages that failed before an attempt still show their failure reason.
+for the latest attempt, including the live combined job output. Choose an older
+attempt in the monitor to inspect its history. While viewing the latest attempt,
+the log follows a retry. New experiment jobs label child stderr before capture.
+Warnings, errors, successful messages and PERF lines are colored in retained
+logs as well. Older merged logs lack per-stream labels. Stages that failed before an attempt still show their failure reason.
 The workflow details and log windows follow new output at the bottom. Scrolling
 up pauses following; returning to the bottom resumes it. Unchanged status polls
 preserve text selection and scroll position. A successful frame selection

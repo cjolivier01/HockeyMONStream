@@ -30,7 +30,8 @@ class LogTextEdit : public QPlainTextEdit {
     preserveViewport(edit, reset);
   }
 
-  void setLogText(QString text, const QString& source) {
+  using FormatLine = std::function<QString(const QString&)>;
+  void setLogText(QString text, const QString& source, const FormatLine& format = {}) {
     text.replace("\r\n", "\n");
     text.replace('\r', '\n');
     const bool reset = source != source_;
@@ -42,7 +43,38 @@ class LogTextEdit : public QPlainTextEdit {
     const qsizetype prefix = !reset && snapshot_ && text.startsWith(*snapshot_) ? snapshot_->size() : -1;
     editLog(
         [&] {
-          if (prefix >= 0) {
+          if (format) {
+            QTextCursor cursor(document());
+            qsizetype start = 0;
+            if (prefix >= 0) {
+              // A poll can extend an incomplete line, changing its severity or ANSI style.
+              start = prefix ? text.lastIndexOf('\n', prefix - 1) + 1 : 0;
+              cursor.movePosition(QTextCursor::End);
+              cursor.movePosition(QTextCursor::StartOfBlock, QTextCursor::KeepAnchor);
+            } else {
+              cursor.select(QTextCursor::Document);
+            }
+            cursor.beginEditBlock();
+            cursor.removeSelectedText();
+            cursor.setCharFormat(QTextCharFormat());
+            if (prefix < 0 && maximumBlockCount() > 0 && text.count('\n') >= maximumBlockCount()) {
+              // Skip history the document would immediately discard on a full refresh.
+              start = text.lastIndexOf('\n');
+              for (int block = 1; block < maximumBlockCount(); ++block)
+                start = text.lastIndexOf('\n', start - 1);
+              ++start;
+            }
+            for (;;) {
+              const auto end = text.indexOf('\n', start);
+              cursor.insertHtml(format(text.mid(start, end < 0 ? -1 : end - start)));
+              if (end < 0)
+                break;
+              cursor.insertBlock();
+              cursor.setCharFormat(QTextCharFormat());
+              start = end + 1;
+            }
+            cursor.endEditBlock();
+          } else if (prefix >= 0) {
             QTextCursor cursor(document());
             cursor.movePosition(QTextCursor::End);
             cursor.insertText(text.mid(prefix));

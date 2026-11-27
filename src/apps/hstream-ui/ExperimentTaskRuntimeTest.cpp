@@ -157,13 +157,28 @@ void run(const fs::path& root) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--forward") {
+    QProcess job;
+    hm::experiment::forward_job_output(job);
+    job.start(
+        "/bin/sh",
+        {"-c", "printf 'HSTREAM_RECORD ok\\n'; printf decoder >&2; sleep .1; printf ' ready\\nwarning\\rpartial' >&2"});
+    return job.waitForFinished() ? job.exitCode() : 1;
+  }
   char pattern[] = "/tmp/hstream-retained-frames-XXXXXX";
   const char* directory = mkdtemp(pattern);
   if (!directory)
     return 1;
   const fs::path root(directory);
   try {
+    QProcess capture;
+    capture.start(argv[0], {"--forward"});
+    require(capture.waitForFinished() && capture.exitCode() == 0, "Cannot inspect experiment job output");
+    require(capture.readAllStandardOutput() == "HSTREAM_RECORD ok\n", "Native stdout changed");
+    require(
+        capture.readAllStandardError() == "[stderr] decoder ready\n[stderr] warning\r[stderr] partial",
+        "Fragmented or trailing job stderr lost its stream identity");
     run(root);
     fs::remove_all(root);
     std::cout << "Retained selected-frame materialization checks passed\n";
