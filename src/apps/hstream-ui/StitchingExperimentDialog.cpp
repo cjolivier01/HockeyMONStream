@@ -3202,6 +3202,17 @@ struct StitchingExperimentDialog::Impl {
     return persisted;
   }
 
+  void default_passage_start() {
+    const QTime zero(0, 0);
+    if (preview_start->time() != zero)
+      return;
+    auto first = parse_time(start_frames->text().section(',', 0, 0, QString::SectionSkipEmpty));
+    if (first == zero)
+      first = parse_time(QString::fromStdString(*initial_settings.player_scan_playback_start));
+    if (first)
+      preview_start->setTime(*first);
+  }
+
   // A nonnegative validated_row replays one exact row whose artifacts this
   // dialog already checked. Every other entry re-reads the selection and
   // validates it: double-clicking a ready row lands here directly, and the
@@ -3283,6 +3294,7 @@ struct StitchingExperimentDialog::Impl {
     preview_environment.insert("HSTREAM_EXPERIMENT_PROCESS_TOKEN", preview_process_token);
     preview_process->setProcessEnvironment(preview_environment);
     QStringList args = base_arguments(candidate);
+    default_passage_start();
     args << "--enable-sinks=RENDER"
          << "--show" << QString("--start-time=%1").arg(format_time(preview_start->time()))
          << QString("--time-limit=%1").arg(preview_duration->value())
@@ -4605,18 +4617,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.preview_start = new QTimeEdit();
   s.preview_start->setObjectName("stitchExperimentPreviewStart");
   s.preview_start->setDisplayFormat("HH:mm:ss.zzz");
-  const auto default_passage_start = [&s] {
-    const QTime zero(0, 0);
-    if (s.preview_start->time() != zero)
-      return;
-    auto first = parse_time(s.start_frames->text().section(',', 0, 0));
-    if (first == zero)
-      first = parse_time(QString::fromStdString(*s.initial_settings.player_scan_playback_start));
-    if (first)
-      s.preview_start->setTime(*first);
-  };
-  default_passage_start();
-  connect(s.start_frames, &QLineEdit::editingFinished, this, default_passage_start);
+  s.default_passage_start();
+  connect(s.start_frames, &QLineEdit::editingFinished, this, [&s] { s.default_passage_start(); });
   s.preview_duration = new QSpinBox();
   s.preview_duration->setObjectName("stitchExperimentPreviewDuration");
   s.preview_duration->setRange(2, 120);

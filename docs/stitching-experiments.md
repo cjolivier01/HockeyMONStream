@@ -176,8 +176,9 @@ Select a ready row and choose **Play selected** (or double-click it). The existi
 the configured passage start and duration; Loop restarts that exact passage. The candidate matrix and results sit
 beside the preview, with passage start and duration on separate labeled rows below it.
 
-When **Passage start** is zero, opening the dialog or finishing an edit to **First calibration frames** fills it
-from the first time in the list. A zero first entry uses the main Playback start, including milliseconds.
+When **Passage start** is zero, opening the dialog, finishing an edit to **First calibration frames**, or
+choosing **Play selected** fills it from the first time in the list. A zero first entry uses the main Playback
+start, including milliseconds.
 An end-relative first entry leaves the passage at zero because preview playback takes an absolute time.
 
 **Seam blend** and **Feather width** affect preview rendering without recalibrating a

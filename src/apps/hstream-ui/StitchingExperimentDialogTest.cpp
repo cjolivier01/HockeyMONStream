@@ -550,7 +550,7 @@ void exercise_reference_defaults(const QString& game, const QString& root) {
     if (reference != "00:00:00")
       continue;
     passage->setTime(zero);
-    first->setText("00:00:08.375,-00:00:01");
+    first->setText(",00:00:08.375,-00:00:01");
     first->editingFinished();
     require(passage->time() == QTime(0, 0, 8, 375), "Use the first time in a calibration matrix");
     passage->setTime(QTime(0, 1, 17));
@@ -3610,7 +3610,13 @@ void exercise_blend_preview(const QString& game, const QString& root) {
     return read(captured);
   };
 
+  auto* first = widget<QLineEdit>(dialog, "stitchExperimentStartFrames");
+  first->setText("00:00:12.125");
+  first->editingFinished();
+  auto* passage = widget<QTimeEdit>(dialog, "stitchExperimentPreviewStart");
+  passage->setTime(QTime(0, 0));
   const QString laplacian_args = preview_arguments();
+  require(laplacian_args.contains("--start-time=00:00:12.125"), "Play must resolve a passage reset to zero");
   require(
       laplacian_args.contains("--options=stitching.blend_mode=laplacian"),
       "The preview must carry the selected seam blend");
@@ -3620,7 +3626,9 @@ void exercise_blend_preview(const QString& game, const QString& root) {
 
   blend->setCurrentIndex(blend->findData("alpha"));
   feather->setValue(0.3);
+  passage->setTime(QTime(0, 1, 3));
   const QString alpha_args = preview_arguments();
+  require(alpha_args.contains("--start-time=00:01:03"), "Play must use an explicit nonzero passage start");
   require(
       alpha_args.contains("--options=stitching.blend_mode=alpha,stitching.blend_feather_fraction=0.3"),
       "Alpha must carry both the mode and its width");
