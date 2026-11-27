@@ -4605,8 +4605,18 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.preview_start = new QTimeEdit();
   s.preview_start->setObjectName("stitchExperimentPreviewStart");
   s.preview_start->setDisplayFormat("HH:mm:ss.zzz");
-  if (const auto parsed = parse_time(stitch_frame_time))
-    s.preview_start->setTime(*parsed);
+  const auto default_passage_start = [&s] {
+    const QTime zero(0, 0);
+    if (s.preview_start->time() != zero)
+      return;
+    auto first = parse_time(s.start_frames->text().section(',', 0, 0));
+    if (first == zero)
+      first = parse_time(QString::fromStdString(*s.initial_settings.player_scan_playback_start));
+    if (first)
+      s.preview_start->setTime(*first);
+  };
+  default_passage_start();
+  connect(s.start_frames, &QLineEdit::editingFinished, this, default_passage_start);
   s.preview_duration = new QSpinBox();
   s.preview_duration->setObjectName("stitchExperimentPreviewDuration");
   s.preview_duration->setRange(2, 120);

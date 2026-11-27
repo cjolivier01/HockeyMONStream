@@ -540,9 +540,26 @@ void exercise_reference_defaults(const QString& game, const QString& root) {
         {},
         "00:03:45.125");
     const auto expected = reference == "00:00:00" ? QString("00:03:45.125") : reference;
+    auto* first = widget<QLineEdit>(dialog, "stitchExperimentStartFrames");
+    auto* passage = widget<QTimeEdit>(dialog, "stitchExperimentPreviewStart");
+    require(first->text() == expected, "Only a zero reference must inherit the main Playback start");
+    const QTime zero(0, 0);
     require(
-        widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->text() == expected,
-        "Only a zero reference must inherit the main Playback start");
+        passage->time() == (reference.startsWith('-') ? zero : QTime::fromString(expected, "HH:mm:ss.zzz")),
+        "Passage start must default to the effective first absolute calibration time");
+    if (reference != "00:00:00")
+      continue;
+    passage->setTime(zero);
+    first->setText("00:00:08.375,-00:00:01");
+    first->editingFinished();
+    require(passage->time() == QTime(0, 0, 8, 375), "Use the first time in a calibration matrix");
+    passage->setTime(QTime(0, 1, 17));
+    first->setText("00:00:00.000,00:00:12");
+    first->editingFinished();
+    require(passage->time() == QTime(0, 1, 17), "A nonzero passage start must survive calibration edits");
+    passage->setTime(zero);
+    first->editingFinished();
+    require(passage->time() == QTime(0, 3, 45, 125), "A zero first matrix entry must resolve to Playback start");
   }
 }
 
