@@ -305,6 +305,85 @@ call(
     dict(game=str(game), token="native-test-token", revision=2, stopped_and_clean=True),
 )
 assert call("inspect", dict(game=str(game)))["owner"] is None
+
+# A later batch can prepare an adopted result even when its historical row
+# predates explicit camera and filter settings. The descriptor must still
+# match the exact result, including the absence of those fields.
+old = json.loads((attempt / "native-result.json").read_text())["outputs"]["workspace"]
+old["settings"].pop("camera")
+old["settings"].pop("control_point_filtering")
+stored_settings = dict(old["settings"])
+stored_settings["reference"] = stored_settings.pop("stitch_frame_time")
+row.pop("selection_workspace")
+row.pop("selection_attempt_id")
+row.update(
+    state="complete",
+    artifact_generation="previous-calibration",
+    workflow_active=False,
+    settings=stored_settings,
+    result_attempt_id=attempt.name,
+    result_workspace=dict(
+        game_directory=old["game_directory"], owner=old["invalidation_id"]
+    ),
+)
+(store / catalog_key).mkdir(parents=True)
+(store / "owner.yaml").write_text(json.dumps(dict(version=1, game_directory=str(game))))
+(store / "index.yaml").write_text(json.dumps(index))
+next_workflow = "retained-variant"
+next_directory = game / "_hockeymon/workflows" / next_workflow
+next_attempt = next_directory / "attempts/import-previous"
+next_attempt.mkdir(parents=True)
+next_token = "variant-owner"
+call(
+    "acquire",
+    dict(
+        game=str(game),
+        kind="workflow",
+        id=next_workflow,
+        token=next_token,
+        workflow_directory=str(next_directory),
+    ),
+)
+next_request = dict(
+    request,
+    workflow_id=next_workflow,
+    root=str(next_attempt),
+    attempt_id=next_attempt.name,
+    result_path=str(next_attempt / "native-result.json"),
+    owner=dict(game=str(game), token=next_token),
+    inputs={"workspace": old},
+)
+p = next_attempt / "request.json"
+for changed_field in (
+    {"control_points": 50},
+    {"control_point_filtering": {"epipolar_ransac": False}},
+):
+    altered = dict(old, settings=dict(old["settings"], **changed_field))
+    p.write_text(json.dumps(dict(next_request, inputs={"workspace": altered})))
+    r = subprocess.run(
+        [str(binary), "--request", str(p)], capture_output=True, text=True, timeout=30
+    )
+    assert r.returncode != 0 and "exact catalog reference" in r.stdout, (
+        r.stdout,
+        r.stderr,
+    )
+p.write_text(json.dumps(next_request))
+r = subprocess.run(
+    [str(binary), "--request", str(p)], capture_output=True, text=True, timeout=30
+)
+assert r.returncode == 0, (r.stdout, r.stderr)
+copied = json.loads((next_attempt / "native-result.json").read_text())["outputs"][
+    "workspace"
+]
+assert (
+    copied["settings"] == old["settings"]
+    and copied["game_directory"] != old["game_directory"]
+)
+assert original.read_bytes() == original_bytes
+call(
+    "release",
+    dict(game=str(game), token=next_token, revision=1, stopped_and_clean=True),
+)
 print(
     "Admission conflict/idempotency, CPU prepare, portable artifacts and release passed"
 )

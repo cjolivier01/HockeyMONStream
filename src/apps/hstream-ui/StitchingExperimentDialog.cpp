@@ -38,7 +38,9 @@
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QScopedValueRollback>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
@@ -92,6 +94,7 @@
 #include <vector>
 
 #ifdef Q_OS_UNIX
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
@@ -669,6 +672,15 @@ struct StitchingExperimentDialog::Impl {
   QProgressBar* progress{nullptr};
   LogTextEdit* log{nullptr};
   std::unique_ptr<QTemporaryDir> session;
+  struct QueueAvailability {
+    int queued = 0;
+    bool retryable = false;
+    bool operator==(const QueueAvailability& other) const {
+      return queued == other.queued && retryable == other.retryable;
+    }
+  };
+  std::optional<QueueAvailability> observed_queue;
+  std::optional<std::array<int64_t, 5>> observed_index;
   std::optional<StitchingExperimentStore> store;
   QString store_error;
   std::vector<Candidate> candidates;
@@ -687,7 +699,7 @@ struct StitchingExperimentDialog::Impl {
   int next_candidate_sequence{0};
   int running_candidate{-1};
   int batch_only_row{-1};
-  int open_editor_after_row{-1};
+  QString open_editor_after_candidate;
   bool batch_started{false};
   bool batch_active{false};
   bool local_after_workflows{false};
@@ -736,6 +748,8 @@ struct StitchingExperimentDialog::Impl {
   }
 
   bool claim_local_operation() {
+    observed_index.reset();
+    observed_queue.reset();
     if (!local_operation_token.isEmpty()) {
       if (local_cleanup_unconfirmed()) {
         show_status("Previous experiment cleanup has no verified supervisor receipt; retaining ownership.", true);
@@ -792,11 +806,20 @@ struct StitchingExperimentDialog::Impl {
     return true;
   }
 
+  // Catalog links name the original session workspace even when a workflow
+  // has adopted its frames or result in a separate attempt directory.
+  std::string catalog_key(const StoredStitchingExperiment& record) const {
+    return record.workspace.game_directory.lexically_relative(store->directory).generic_string();
+  }
+
   QString candidate_key(const Candidate& candidate) const {
-    return store && candidate.stored
-        ? QString::fromStdString(
-              candidate.stored->workspace.game_directory.lexically_relative(store->directory).generic_string())
-        : QString();
+    return store && candidate.stored ? QString::fromStdString(catalog_key(*candidate.stored)) : QString();
+  }
+
+  int row_for_key(const QString& key) const {
+    const auto found = std::find_if(
+        candidates.begin(), candidates.end(), [&](const Candidate& item) { return candidate_key(item) == key; });
+    return found == candidates.end() ? -1 : found->row;
   }
 
   void workflow_snapshot(const QJsonObject& snapshot) {
@@ -833,8 +856,7 @@ struct StitchingExperimentDialog::Impl {
       if (key.isEmpty() || !stages.count(key))
         continue;
       for (const auto& record : catalog->experiments) {
-        if (QString::fromStdString(
-                record.workspace.game_directory.lexically_relative(store->directory).generic_string()) != key)
+        if (QString::fromStdString(catalog_key(record)) != key)
           continue;
         candidate.stored = record;
         candidate.workspace = ResolvedStitchingExperimentWorkspace(record);
@@ -862,13 +884,13 @@ struct StitchingExperimentDialog::Impl {
     if (!store || !workflow || (exporting && !workflow->selected()) || preparation_worker || promotion_worker ||
         preview_process || calibration_process)
       return;
-    if (!release_local_operation())
-      return;
     const auto catalog = LoadStitchingExperimentStore(*store);
     if (!catalog.ok()) {
       show_status(QString::fromStdString(catalog.status().ToString()), true);
       return;
     }
+    if (!release_local_operation())
+      return;
     if (exporting)
       workflow->exportBatch(*store, *catalog);
     else {
@@ -1028,13 +1050,70 @@ struct StitchingExperimentDialog::Impl {
          (candidate.stored && candidate.stored->state == "frozen"));
   }
 
+  static bool retryable_record(const StoredStitchingExperiment& row) {
+    return !row.workflow_active && row.process_session_id == 0 && row.process_token.empty() &&
+        row.state != "quarantined" && (row.state == "failed" || row.state == "frozen" || !row.workflow_id.empty());
+  }
+
   static bool retryable_candidate(const Candidate& candidate) {
     return !candidate.main_calibration && !candidate.complete && !candidate.queued && candidate.workspace &&
-        candidate.stored && !candidate.selection_reuse_blocked && !candidate.stored->workflow_active &&
-        candidate.stored->process_session_id == 0 && candidate.stored->process_token.empty() &&
-        candidate.stored->state != "quarantined" &&
-        (candidate.stored->state == "failed" || candidate.stored->state == "frozen" ||
-         !candidate.stored->workflow_id.empty());
+        candidate.stored && !candidate.selection_reuse_blocked && retryable_record(*candidate.stored);
+  }
+
+  bool store_directory_missing() const {
+    struct stat info{};
+    return ::lstat(store->directory.c_str(), &info) != 0 && errno == ENOENT;
+  }
+
+  void set_observed_queue(std::optional<QueueAvailability> availability) {
+    if (availability == observed_queue)
+      return;
+    observed_queue = availability;
+    update_controls();
+  }
+
+  void observe_queue_availability() {
+    if (!store || !store_error.isEmpty() || !dialog->isVisible() || !local_operation_token.isEmpty() ||
+        (workflow && (workflow->active() || workflow->busy())) || closing)
+      return;
+    // index.yaml is atomically replaced. A stat also observes remote NFS
+    // publications, which do not generate local filesystem watcher events.
+    struct stat stamp{};
+    if (::lstat((store->directory / "index.yaml").c_str(), &stamp) != 0) {
+      if (errno == ENOENT && store_directory_missing()) {
+        observed_index.reset();
+        set_observed_queue(QueueAvailability{});
+      }
+      return;
+    }
+    if (!S_ISREG(stamp.st_mode))
+      return;
+    const std::array<int64_t, 5> revision{
+        int64_t(stamp.st_dev), int64_t(stamp.st_ino), stamp.st_size, stamp.st_mtim.tv_sec, stamp.st_mtim.tv_nsec};
+    if (observed_index == revision)
+      return;
+    auto catalog = LoadStitchingExperimentStore(*store, /*advisory=*/true);
+    if (!catalog.ok())
+      return;
+    std::map<std::string, const Candidate*> known;
+    for (const auto& candidate : candidates)
+      if (candidate.stored)
+        known.emplace(catalog_key(*candidate.stored), &candidate);
+    QueueAvailability availability;
+    bool changed = known.size() != catalog->experiments.size();
+    for (const auto& record : catalog->experiments) {
+      const auto local = known.find(catalog_key(record));
+      if (local != known.end() && local->second->stored->revision == record.revision) {
+        availability.queued += local->second->queued;
+        availability.retryable |= retryable_candidate(*local->second);
+      } else {
+        changed = true;
+        availability.queued += record.state == "queued" && record.workflow_id.empty();
+        availability.retryable |= record.state != "complete" && retryable_record(record);
+      }
+    }
+    observed_index = revision;
+    set_observed_queue(changed ? std::make_optional(availability) : std::nullopt);
   }
 
   void update_controls() {
@@ -1070,9 +1149,11 @@ struct StitchingExperimentDialog::Impl {
     }
     const bool editing_batch = store && store_error.isEmpty() && !cleanup_unconfirmed && !workflow_busy && !remote &&
         !active_batch && !preview_owned && !promoting && !stopping && !closing;
-    const auto queued_count =
-        std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
-    const auto retry_count = std::count_if(candidates.begin(), candidates.end(), retryable_candidate);
+    const auto queued_count = observed_queue
+        ? observed_queue->queued
+        : std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
+    const bool retryable = observed_queue ? observed_queue->retryable
+                                          : std::any_of(candidates.begin(), candidates.end(), retryable_candidate);
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
@@ -1080,7 +1161,7 @@ struct StitchingExperimentDialog::Impl {
     clear_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
-    start_batch->setEnabled(editing_batch && (queued_count > 0 || retry_count > 0));
+    start_batch->setEnabled(editing_batch && (queued_count > 0 || retryable));
     start_batch->setToolTip(
         "Run queued candidates and retry unfinished candidates still in this list. Successful stages are reused.");
     cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing && !close_after_workflow);
@@ -1295,8 +1376,7 @@ struct StitchingExperimentDialog::Impl {
     std::map<int, std::pair<QByteArray, bool>> source_snapshots;
     for (const Candidate& candidate : candidates) {
       if (candidate.workspace && candidate.stored) {
-        workspace_keys[candidate.sequence] =
-            candidate.stored->workspace.game_directory.lexically_relative(persistent.directory).generic_string();
+        workspace_keys[candidate.sequence] = catalog_key(*candidate.stored);
         source_snapshots[candidate.sequence] = {candidate.source_config_revision, candidate.has_selected_frames};
       }
     }
@@ -1433,6 +1513,7 @@ struct StitchingExperimentDialog::Impl {
       } else {
         show_status("Queued candidates saved in this game. Add more options or start the batch.");
       }
+      release_local_operation();
       update_controls();
       maybe_finish_close();
     });
@@ -1610,18 +1691,56 @@ struct StitchingExperimentDialog::Impl {
         candidate.failure = QString::fromStdString(fingerprint.status().ToString());
       // Listing and frame inspection stay bounded; Play validates all artifacts on a worker.
       candidate.complete = candidate.failure.isEmpty();
-      append_candidate(std::move(candidate));
+      set_candidate_row(std::move(candidate));
     }
+    sync_catalog_rows(*catalog);
+    if (!candidates.empty())
+      table->selectRow(0);
+  }
+
+  // Add can observe rows queued or finished in another dialog. Keep existing
+  // sequence numbers and local Add history while restoring durable dependencies.
+  void sync_catalog_rows(StitchingExperimentCatalog& catalog) {
+    const QSignalBlocker block_selection(table);
     std::map<std::string, int> restored_sequences;
-    for (const auto& record : catalog->experiments)
-      restored_sequences[record.workspace.game_directory.lexically_relative(store->directory).generic_string()] =
-          ++next_candidate_sequence;
-    for (const auto& record : catalog->experiments) {
+    for (const auto& record : catalog.experiments)
+      restored_sequences.emplace(catalog_key(record), 0);
+
+    std::map<std::string, int> existing_rows;
+    for (int row = 0; row < static_cast<int>(candidates.size());) {
+      Candidate& item = candidates[row];
+      if (item.stored) {
+        const auto key = catalog_key(*item.stored);
+        const auto sequence = restored_sequences.find(key);
+        if (sequence == restored_sequences.end()) {
+          candidates.erase(candidates.begin() + row);
+          table->removeRow(row);
+          continue;
+        }
+        sequence->second = item.sequence;
+        existing_rows.emplace(key, row);
+      }
+      item.row = row++;
+    }
+    for (const auto& record : catalog.experiments) {
+      int& sequence = restored_sequences.at(catalog_key(record));
+      if (!sequence)
+        sequence = ++next_candidate_sequence;
+    }
+    for (const auto& record : catalog.experiments) {
+      const auto key = catalog_key(record);
       Candidate candidate;
+      const auto existing = existing_rows.find(key);
+      if (existing != existing_rows.end()) {
+        const auto& previous = candidates[existing->second];
+        if (previous.stored->revision == record.revision)
+          continue;
+        candidate.row = previous.row;
+        candidate.requested_config_revision = previous.requested_config_revision;
+      }
       candidate.settings = record.workspace.settings;
       candidate.workspace = ResolvedStitchingExperimentWorkspace(record);
-      candidate.sequence =
-          restored_sequences[record.workspace.game_directory.lexically_relative(store->directory).generic_string()];
+      candidate.sequence = restored_sequences.at(key);
       candidate.queued = record.state == "queued";
       // Resuming a queue written before the switch must keep its original algorithm.
       if (candidate.queued && !candidate.settings.control_point_selection)
@@ -1660,23 +1779,22 @@ struct StitchingExperimentDialog::Impl {
             }
           }
         }
-        const auto selected = catalog->selected_by_count.find(candidate.settings.frame_count);
-        const auto retained = catalog->retained_by_count.find(candidate.settings.frame_count);
-        const std::string owner_key = selected != catalog->selected_by_count.end() ? selected->second
-            : retained != catalog->retained_by_count.end()                         ? retained->second
-                                                                                   : std::string();
-        if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
+        const auto selected = catalog.selected_by_count.find(candidate.settings.frame_count);
+        const auto retained = catalog.retained_by_count.find(candidate.settings.frame_count);
+        const std::string owner_key = selected != catalog.selected_by_count.end() ? selected->second
+            : retained != catalog.retained_by_count.end()                         ? retained->second
+                                                                                  : std::string();
+        if (key == owner_key)
           candidate.selection_owner_sequence = candidate.sequence;
-        append_candidate(std::move(candidate));
+        set_candidate_row(std::move(candidate));
         continue;
       }
       if (candidate.failure.startsWith("Unavailable: baseline calibration failed")) {
         const auto baseline =
-            std::find_if(catalog->experiments.begin(), catalog->experiments.end(), [&](const auto& row) {
-              return row.workspace.game_directory.lexically_relative(store->directory).generic_string() ==
-                  record.baseline_workspace_key;
+            std::find_if(catalog.experiments.begin(), catalog.experiments.end(), [&](const auto& row) {
+              return catalog_key(row) == record.baseline_workspace_key;
             });
-        if (baseline != catalog->experiments.end() && !baseline->failure.empty())
+        if (baseline != catalog.experiments.end() && !baseline->failure.empty())
           candidate.failure = QString("Unavailable: baseline calibration failed (Baseline %1): %2")
                                   .arg(candidate.baseline_sequence)
                                   .arg(QString::fromStdString(baseline->failure));
@@ -1714,8 +1832,7 @@ struct StitchingExperimentDialog::Impl {
               candidate.has_selected_frames = true;
               candidate.reservation_token.clear();
               candidate.failure = "Previous run stopped; saved frame selection recovered";
-              catalog->selected_by_count[candidate.settings.frame_count] =
-                  candidate.workspace->game_directory.lexically_relative(store->directory).generic_string();
+              catalog.selected_by_count[candidate.settings.frame_count] = key;
               recovered_selection = true;
             } else {
               candidate.selection_reuse_blocked = true;
@@ -1755,17 +1872,15 @@ struct StitchingExperimentDialog::Impl {
       if (!candidate.queued && !candidate.selection_reuse_blocked &&
           candidate.selection_owner_sequence == candidate.sequence)
         candidate.selection_owner_sequence = 0;
-      const auto selected = catalog->selected_by_count.find(candidate.settings.frame_count);
-      const auto retained = catalog->retained_by_count.find(candidate.settings.frame_count);
-      const std::string owner_key = selected != catalog->selected_by_count.end() ? selected->second
-          : retained != catalog->retained_by_count.end()                         ? retained->second
-                                                                                 : std::string();
-      if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
+      const auto selected = catalog.selected_by_count.find(candidate.settings.frame_count);
+      const auto retained = catalog.retained_by_count.find(candidate.settings.frame_count);
+      const std::string owner_key = selected != catalog.selected_by_count.end() ? selected->second
+          : retained != catalog.retained_by_count.end()                         ? retained->second
+                                                                                : std::string();
+      if (key == owner_key)
         candidate.selection_owner_sequence = candidate.sequence;
-      append_candidate(std::move(candidate));
+      set_candidate_row(std::move(candidate));
     }
-    if (!candidates.empty())
-      table->selectRow(0);
   }
 
   void append_output(QProcess* process) {
@@ -2206,11 +2321,14 @@ struct StitchingExperimentDialog::Impl {
       cancelling = false;
       batch_only_row = -1;
       update_controls();
-      if (open_editor_after_row >= 0 && !closing) {
-        const int edit_row = std::exchange(open_editor_after_row, -1);
-        // Matching snapshots remain useful when subsequent geometry failed.
-        if (candidate_has_inspection(candidates[edit_row]))
-          QTimer::singleShot(0, dialog, [this, edit_row]() { open_match_editor(edit_row, /*report_refusal=*/false); });
+      if (!open_editor_after_candidate.isEmpty() && !closing) {
+        const auto key = std::exchange(open_editor_after_candidate, {});
+        QTimer::singleShot(0, dialog, [this, key] {
+          const int row = row_for_key(key);
+          // Matching snapshots remain useful when subsequent geometry failed.
+          if (row >= 0 && candidate_has_inspection(candidates[row]))
+            open_match_editor(row, /*report_refusal=*/false);
+        });
       }
       return;
     }
@@ -2569,10 +2687,13 @@ struct StitchingExperimentDialog::Impl {
     }
   }
 
-  void append_candidate(Candidate candidate) {
-    const int row = table->rowCount();
-    candidate.row = row;
-    table->insertRow(row);
+  void set_candidate_row(Candidate candidate) {
+    const bool append = candidate.row < 0;
+    const int row = append ? table->rowCount() : candidate.row;
+    if (append) {
+      candidate.row = row;
+      table->insertRow(row);
+    }
     const StitchingExperimentSettings& settings = candidate.settings;
     const QString rotation = settings.rink_rotation_degrees ? QString("%1 / %2")
                                                                   .arg((*settings.rink_rotation_degrees)[1], 0, 'g', 6)
@@ -2634,7 +2755,42 @@ struct StitchingExperimentDialog::Impl {
     if (settings.manual_control_points)
       table->item(row, 1)->setToolTip(
           "Uses every saved manual match across all pairs; the automatic per-pair cap does not apply.");
-    candidates.push_back(std::move(candidate));
+    if (append)
+      candidates.push_back(std::move(candidate));
+    else
+      candidates[row] = std::move(candidate);
+  }
+
+  void finish_queue_planning() {
+    release_local_operation();
+    update_controls();
+  }
+
+  std::optional<StitchingExperimentCatalog> claim_current_queue() {
+    // The idle Main still can hold the game's admission lock during its metadata read.
+    still_preview->setSource({});
+    if (!claim_local_operation()) {
+      update_controls();
+      return std::nullopt;
+    }
+    if (store_directory_missing()) {
+      auto reopened = OpenStitchingExperimentStore(game_directory.toStdString());
+      if (!reopened.ok()) {
+        show_status(QString::fromStdString(reopened.status().ToString()), true);
+        finish_queue_planning();
+        return std::nullopt;
+      }
+      store = *reopened;
+      session.reset();
+    }
+    auto catalog = LoadStitchingExperimentStore(*store);
+    if (!catalog.ok()) {
+      show_status(QString::fromStdString(catalog.status().ToString()), true);
+      finish_queue_planning();
+      return std::nullopt;
+    }
+    sync_catalog_rows(*catalog);
+    return std::move(*catalog);
   }
 
   void add_candidates_to_batch() {
@@ -2672,11 +2828,10 @@ struct StitchingExperimentDialog::Impl {
       return;
     }
     const QByteArray config_revision = QCryptographicHash::hash(config_bytes, QCryptographicHash::Sha256);
-    const auto catalog = LoadStitchingExperimentStore(*store);
-    if (!catalog.ok()) {
-      show_status(QString::fromStdString(catalog.status().ToString()), true);
+    auto catalog = claim_current_queue();
+    if (!catalog)
       return;
-    }
+    const auto finish_planning = qScopeGuard([this] { finish_queue_planning(); });
     const QString mode = control_point_selection->currentData().toString();
     const QStringList selections = mode == "both" ? QStringList{"quality-coverage", "legacy"} : QStringList{mode};
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
@@ -2741,13 +2896,12 @@ struct StitchingExperimentDialog::Impl {
                 if (item.main_calibration || item.settings.frame_count != frame_count)
                   return false;
                 if (!owner_key.empty())
-                  return item.workspace &&
-                      item.workspace->game_directory.lexically_relative(store->directory).generic_string() == owner_key;
+                  return item.stored && catalog_key(*item.stored) == owner_key;
                 return item.selection_owner_sequence == item.sequence && item.saved_selection_fingerprint.empty() &&
                     !item.has_selected_frames && (item.queued || item.selection_reuse_blocked);
               });
               if (saved->empty() && !owner_key.empty() && !owner) {
-                show_status("Another dialog saved this frame count. Reopen experiments to reuse its frames.", true);
+                show_status("The saved frame owner for this count is missing from the experiment catalog.", true);
                 return;
               }
               if (saved->empty() && owner && owner->selection_reuse_blocked) {
@@ -2842,7 +2996,7 @@ struct StitchingExperimentDialog::Impl {
       show_status("Every combination from these options is already in the batch.");
       return;
     }
-    if (!claim_local_operation() || !ensure_session())
+    if (!ensure_session())
       return;
     const int first_new_row = static_cast<int>(candidates.size());
     for (Candidate& baseline : candidates) {
@@ -2861,7 +3015,7 @@ struct StitchingExperimentDialog::Impl {
     next_candidate_sequence = sequence;
     for (Candidate& candidate : additions) {
       candidate.requires_ice_mask = required_baselines.count(candidate.sequence) != 0;
-      append_candidate(std::move(candidate));
+      set_candidate_row(std::move(candidate));
     }
     table->selectRow(table->rowCount() - 1);
     show_status(QString("Added %1 candidate%2. The batch now contains %3; add more options or start it.")
@@ -2879,12 +3033,22 @@ struct StitchingExperimentDialog::Impl {
       return;
     // Follow dependencies transitively, including rows added in later sessions.
     std::set<int> sequences{candidates[row].sequence};
+    std::set<std::string> dependencies;
+    if (candidates[row].stored)
+      dependencies.insert(catalog_key(*candidates[row].stored));
     size_t previous_size;
     do {
       previous_size = sequences.size();
-      for (const Candidate& candidate : candidates)
-        if (sequences.count(candidate.baseline_sequence) || sequences.count(candidate.selection_owner_sequence))
-          sequences.insert(candidate.sequence);
+      for (const Candidate& candidate : candidates) {
+        // A saved sibling can become the count's current frame provider.
+        // Removal follows its original parents across all retained sessions.
+        const bool dependent = candidate.stored
+            ? dependencies.count(candidate.stored->baseline_workspace_key) ||
+                dependencies.count(candidate.stored->selection_owner_workspace_key)
+            : sequences.count(candidate.baseline_sequence) || sequences.count(candidate.selection_owner_sequence);
+        if (dependent && sequences.insert(candidate.sequence).second && candidate.stored)
+          dependencies.insert(catalog_key(*candidate.stored));
+      }
     } while (previous_size != sequences.size());
     std::vector<std::string> removed_keys;
     bool removes_completed = false;
@@ -2907,8 +3071,7 @@ struct StitchingExperimentDialog::Impl {
               "This attempt's files were not cataloged. Use Discard experiments to remove its retained files.", true);
           return;
         }
-        removed_keys.push_back(
-            candidate.stored->workspace.game_directory.lexically_relative(store->directory).generic_string());
+        removed_keys.push_back(catalog_key(*candidate.stored));
       }
     }
     if (removes_completed) {
@@ -3067,26 +3230,41 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
-  void start_candidate_batch(int only_row = -1, bool local_only = false) {
-    if (!store || batch_active || (workflow && workflow->active()) ||
-        !std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) {
-          return item.queued || retryable_candidate(item);
-        }))
+  void start_candidate_batch(const QString& only_key = {}, bool local_only = false, bool open_editor = false) {
+    if (!store || batch_active || preparation_worker || (workflow && workflow->active()))
       return;
-    if (preparation_worker || !ensure_session())
+    if (!claim_current_queue())
+      return;
+    const auto finish_planning = qScopeGuard([this] { finish_queue_planning(); });
+    // The chapter confirmation runs a nested event loop. Hold admission until
+    // its answer is applied to the same rows the operator saw.
+    const QSignalBlocker hold_admission(operation_poll);
+    int only_row = -1;
+    if (!only_key.isEmpty()) {
+      only_row = row_for_key(only_key);
+      if (only_row < 0) {
+        show_status("The selected candidate was removed before it could start.", true);
+        return;
+      }
+    }
+    const auto runnable = [&](const Candidate& candidate) {
+      return (only_row < 0 || candidate.row == only_row) && (candidate.queued || retryable_candidate(candidate));
+    };
+    if (std::none_of(candidates.begin(), candidates.end(), runnable)) {
+      show_status("No unfinished candidates to start.");
+      return;
+    }
+    if (!ensure_session())
       return;
     QStringList warnings;
     for (const auto& candidate : candidates) {
-      if ((!candidate.queued && !retryable_candidate(candidate)) || !candidate.workspace ||
-          (only_row >= 0 && candidate.row != only_row))
+      if (!runnable(candidate) || !candidate.workspace)
         continue;
       const auto warning = CameraChapterWarning(candidate.workspace->game_directory);
       if (!warning.isEmpty() && !warnings.contains(warning))
         warnings.push_back(warning);
     }
     if (!ConfirmCameraChapterWarning(dialog, warnings.join("\n")))
-      return;
-    if (!claim_local_operation())
       return;
     for (auto& candidate : candidates) {
       if (!retryable_candidate(candidate) || !candidate.stored->workflow_id.empty() ||
@@ -3096,8 +3274,7 @@ struct StitchingExperimentDialog::Impl {
       candidate.failure.clear();
       candidate.phase = CandidatePhase::kCalibration;
       if (!candidate.has_selected_frames && candidate.baseline_sequence != 0 &&
-          candidate.stored->selection_owner_workspace_key ==
-              candidate.workspace->game_directory.lexically_relative(store->directory).generic_string())
+          candidate.stored->selection_owner_workspace_key == catalog_key(*candidate.stored))
         candidate.selection_owner_sequence = candidate.sequence;
       const auto saved = persist_candidate(candidate, "queued");
       if (!saved.ok()) {
@@ -3160,6 +3337,7 @@ struct StitchingExperimentDialog::Impl {
     view_tabs->setCurrentIndex(1);
     running_candidate = -1;
     batch_only_row = only_row;
+    open_editor_after_candidate = open_editor ? only_key : QString();
     cancelling = false;
     progress->setRange(0, static_cast<int>(candidates.size()));
     progress->setFormat("%p%");
@@ -3539,14 +3717,11 @@ struct StitchingExperimentDialog::Impl {
         candidate.sequence = (**result).sequence;
         candidate.saved_selection_fingerprint = (**result).selection_fingerprint;
         candidate.has_selected_frames = !candidate.saved_selection_fingerprint.empty();
-        append_candidate(std::move(candidate));
+        set_candidate_row(std::move(candidate));
         const int row = static_cast<int>(candidates.size()) - 1;
         table->selectRow(row);
-        if (!closing) {
-          if (preparing)
-            open_editor_after_row = row;
-          start_candidate_batch(row);
-        }
+        if (!closing)
+          start_candidate_batch(candidate_key(candidates[row]), /*local_only=*/true, preparing);
       }
       update_controls();
       maybe_finish_close();
@@ -4848,7 +5023,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     if (s.local_after_workflows && !s.closing && !s.close_after_workflow && !s.workflow->active() &&
         !s.workflow->busy()) {
       s.local_after_workflows = false;
-      QTimer::singleShot(0, s.dialog, [&s] { s.start_candidate_batch(-1, true); });
+      QTimer::singleShot(0, s.dialog, [&s] { s.start_candidate_batch({}, true); });
     }
   };
   s.workflow->snapshotChanged = [&s](const QJsonObject& value) {
@@ -4879,6 +5054,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   };
   s.workflow->exportRequested = [&s] { s.submit_workflow(true); };
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
+  auto* catalog_poll = new QTimer(this);
+  connect(catalog_poll, &QTimer::timeout, this, [&s] { s.observe_queue_availability(); });
+  catalog_poll->start(s.operation_poll->interval());
   s.restore_persistent_store(s.initial_settings);
   if (!s.feature_settings_error.isEmpty())
     s.show_status(s.feature_settings_error, true);

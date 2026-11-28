@@ -78,7 +78,11 @@ struct StitchingExperimentCatalog {
 // acquired; config validation reads bounded atomically published snapshots.
 // All experiment data stays inside the selected game until explicit discard.
 absl::StatusOr<StitchingExperimentStore> OpenStitchingExperimentStore(const std::filesystem::path& game_directory);
-absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const StitchingExperimentStore& store);
+// Advisory reads use a nonblocking shared lock and inspect only the committed
+// index. Workspace directories are validated on the normal action path.
+absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(
+    const StitchingExperimentStore& store,
+    bool advisory = false);
 // A main-derived row remains durable if main changes before completion; a
 // superseded authoritative_main_fingerprint only fills an unclaimed count when
 // main moved to another count. Existing defaults/reservations remain unchanged.

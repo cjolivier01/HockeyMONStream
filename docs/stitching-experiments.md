@@ -124,9 +124,16 @@ The scan serializes its per-frame mask-authority check with game metadata access
 including cancellation polling. Temporary lock contention waits for that access
 to finish; a changed owner or output authorization still fails validation before
 the sampled frame is scored.
-The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits, matcher, image size or rotation
-runs only another solve. The first search duration is authoritative for that count. A different frame count can
-establish another selection; an incompatible reference time for an established count is an error. Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
+The first pair remains the anchor, and a one-frame candidate needs no scan. Once a selection is frozen,
+changing the control-point limit, matcher, image size, rotation or either advanced geometric filter queues a
+new solve using those pairs. For example, two four-frame AKAZE candidates can use the same images with
+different CP limits or with Epipolar RANSAC enabled for only one of them. A later batch can reuse the frames
+from a completed distributed result, including a sibling that used the original scan.
+Add and Start batch refresh the game's saved queue, so a second open dialog can pick up new candidates and
+completed frame selections without reopening. Repeating the same options in one dialog skips that combination.
+Each frame count has its own selection and first search duration. A different count reuses its own saved
+selection if available. An incompatible reference time for an established count is an error.
+Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
 
 An empty passage or insufficient separated people leaves the automatic row unavailable with a reason. Source,
 model, inference, or mask failures are errors. The ordinary baseline remains available. Automatic frame selection

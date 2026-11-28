@@ -574,6 +574,8 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
   StitchingExperimentSettings varied = settings;
   varied.control_points = 1200;
+  varied.control_point_matcher = "akaze-hamming";
+  varied.control_point_filtering = ControlPointFiltering{false, false};
   varied.control_point_resolution = "native";
   varied.rink_rotation_degrees = std::array<double, 3>{0, 1, 2};
   const auto candidate = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 2);
@@ -742,6 +744,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
     return false;
 
   varied.control_points = 1500;
+  varied.control_point_filtering = ControlPointFiltering{false, true};
   varied.control_point_resolution = "1k";
   varied.stitch_frame_time = "00:00:08.000";
   varied.rink_rotation_degrees = std::array<double, 3>{0, -2, 3};
@@ -757,10 +760,50 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
                   plan.fingerprint &&
               !reused_config["stitching"]["stitch_frame_time"].IsDefined() &&
               reused_config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1500 &&
+              reused_config["stitching"]["control_point_matcher"].as<std::string>() == "akaze-hamming" &&
+              read_control_point_filtering(reused_config).value() == *varied.control_point_filtering &&
               reused_config["stitching"]["control_point_resolution"].as<std::string>() == "1k" &&
               reused_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -2,
           "reuse must preserve exact frames and reference spelling while changing only solve settings"))
     return false;
+  // A later batch can import an adopted sibling solve as its frame owner.
+  // It makes a private snapshot of that result and one of its queued variant.
+  const auto adopted = SnapshotStitchingExperimentWorkspace(*reused, root / "previous-workflow/result");
+  if (!adopted.ok() || !PublishPlayerFrameInputs(adopted->game_directory, plan, previous_images).ok())
+    return false;
+  const fs::path adopted_path = adopted->game_directory / "_hockeymon/config.yaml";
+  auto adopted_config = YAML::LoadFile(adopted_path.string());
+  adopted_config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  adopted_config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  const std::string adopted_bytes = YAML::Dump(adopted_config);
+  if (!write(adopted_path, adopted_bytes))
+    return false;
+  const auto imported = SnapshotStitchingExperimentWorkspace(*adopted, root / "next-workflow/retained");
+  varied.control_points = 600;
+  varied.control_point_filtering = ControlPointFiltering{true, false};
+  const auto variant = CreateStitchingExperimentWorkspace(game, root / "next-session", varied, 1);
+  if (!imported.ok() || !variant.ok())
+    return false;
+  const auto working = SnapshotStitchingExperimentWorkspace(*variant, root / "next-workflow/variant");
+  if (!working.ok() ||
+      !expect(
+          ReuseStitchingExperimentPlayerSelection(*imported, *working).ok(),
+          "a later workflow must reuse an adopted sibling's materialized frame set"))
+    return false;
+  const auto working_config = YAML::LoadFile((working->game_directory / "_hockeymon/config.yaml").string());
+  const auto original_inputs = LoadPlayerFrameInputs(adopted->game_directory, plan);
+  const auto working_inputs = LoadPlayerFrameInputs(working->game_directory, plan);
+  if (!expect(
+          original_inputs.ok() && original_inputs->has_value() && working_inputs.ok() && working_inputs->has_value() &&
+              (**original_inputs).image_digests == (**working_inputs).image_digests &&
+              working_config["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>() ==
+                  plan.fingerprint &&
+              working_config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 600 &&
+              read_control_point_filtering(working_config).value() == *varied.control_point_filtering &&
+              YAML::Dump(YAML::LoadFile(adopted_path.string())) == adopted_bytes,
+          "AKAZE variants must keep independent solve settings and identical retained PNGs across workflows"))
+    return false;
+
   YAML::Node conflicting = YAML::Clone(reused_config);
   conflicting["game"]["stitching"]["frame_offsets"]["left"] = 3;
   if (!write(reused->game_directory / "_hockeymon/config.yaml", YAML::Dump(conflicting)) ||

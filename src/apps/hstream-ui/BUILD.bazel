@@ -735,6 +735,8 @@ cc_library(
 cc_test(
     name = "stitching_experiment_dialog_test",
     srcs = ["StitchingExperimentDialogTest.cpp"],
+    # The full dialog workflow includes 64 independent workspace commits on Jetson storage.
+    timeout = "long",
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     linkopts = ["-lxcb"],
