@@ -7,6 +7,7 @@
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/RinkMaskBrush.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -78,6 +79,26 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 int main() {
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
+  {
+    // At 4:1 the top-left pixel in a native block is outside a one-pixel preview brush.
+    const cv::Size preview(20, 15);
+    const cv::Point point(2, 2);
+    cv::Mat mask = cv::Mat::zeros(60, 80, CV_8U);
+    mask.at<uint8_t>(8, 8) = 255;
+    auto sample = [&] { return hm::stitching::SampleIceBrushPreview(mask, preview).at<uint8_t>(point); };
+    ok &= expect(sample() == 0, "the brush preview samples the native center, not the corner of its block");
+    for (const cv::Size size : {cv::Size(80, 60), cv::Size(24, 18)}) {
+      mask = cv::Mat::zeros(size, CV_8U);
+      for (const uint8_t value : {255, 0}) {
+        hm::stitching::DrawIceBrushSegment(mask, nullptr, preview, point, point, 1, value);
+        ok &= expect(sample() == value, "painting and erasing one preview pixel must change its displayed sample");
+        hm::stitching::DrawIceBrushSegment(mask, nullptr, preview, {2, 12}, {12, 2}, 1, value);
+        const auto scaled = hm::stitching::SampleIceBrushPreview(mask, preview);
+        for (int x = 2; x <= 12; ++x)
+          ok &= expect(scaled.at<uint8_t>(14 - x, x) == value, "thin diagonal strokes must retain their centerline");
+      }
+    }
+  }
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("field-mask-persistence-test-" + std::to_string(::getpid()));
   fs::create_directories(root);

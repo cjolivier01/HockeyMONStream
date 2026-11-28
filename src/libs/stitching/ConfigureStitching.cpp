@@ -13,6 +13,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/RinkMaskBrush.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
@@ -5581,63 +5582,6 @@ absl::StatusOr<fs::path> create_mask_scratch(const fs::path& root) {
   return input_dir; // mkdtemp creates this directory with mode 0700.
 }
 
-// Fill the round-capped segment covered by the preview brush. OpenCV's thick line
-// rounds odd diameters up and draws both edge pixels, making an eraser wider than its cursor.
-void draw_ice_brush_segment(
-    cv::Mat& mask,
-    cv::Mat* erased,
-    cv::Size preview,
-    cv::Point start,
-    cv::Point end,
-    int diameter,
-    uint8_t value) {
-  const cv::Point2d a(start.x + .5, start.y + .5), b(end.x + .5, end.y + .5), delta = b - a;
-  const double radius = diameter / 2.;
-  const double length = cv::norm(delta);
-  const cv::Point2d normal = length ? cv::Point2d(-delta.y, delta.x) * (radius / length) : cv::Point2d();
-  const double scale_x = static_cast<double>(mask.cols) / preview.width;
-  const double scale_y = static_cast<double>(mask.rows) / preview.height;
-  // Native samples lie at half-integers. Half-open spans give an even-width brush a consistent edge.
-  auto first_pixel = [](double edge, double scale, int limit) {
-    return std::clamp(static_cast<int>(std::ceil(edge * scale - .5)), 0, limit);
-  };
-  const int first_y = first_pixel(std::min(a.y, b.y) - radius, scale_y, mask.rows);
-  const int end_y = first_pixel(std::max(a.y, b.y) + radius, scale_y, mask.rows);
-  for (int row = first_y; row < end_y; ++row) {
-    const double y = (row + .5) / scale_y;
-    double left = std::numeric_limits<double>::infinity(), right = -left;
-    // A horizontal slice of a capsule is one span bounded by its round caps or straight sides.
-    for (const auto& center : {a, b}) {
-      const double dy = y - center.y;
-      if (std::abs(dy) <= radius) {
-        const double dx = std::sqrt(radius * radius - dy * dy);
-        left = std::min(left, center.x - dx);
-        right = std::max(right, center.x + dx);
-      }
-    }
-    if (delta.y != 0) {
-      for (const auto& side : {a + normal, a - normal}) {
-        const double t = (y - side.y) / delta.y;
-        if (t >= 0 && t <= 1) {
-          const double x = side.x + t * delta.x;
-          left = std::min(left, x);
-          right = std::max(right, x);
-        }
-      }
-    }
-    if (left >= right)
-      continue;
-    const int begin = first_pixel(left, scale_x, mask.cols);
-    const int end = first_pixel(right, scale_x, mask.cols);
-    auto* pixels = mask.ptr<uint8_t>(row);
-    std::fill(pixels + begin, pixels + end, value);
-    if (erased) {
-      auto* pixels_erased = erased->ptr<uint8_t>(row);
-      std::fill(pixels_erased + begin, pixels_erased + end, 255);
-    }
-  }
-}
-
 absl::Status paint_detected_rink_mask(
     const fs::path& staging,
     const cv::Mat& stitched,
@@ -5646,12 +5590,12 @@ absl::Status paint_detected_rink_mask(
   // This is the one still already read for segmentation. All video frames remain on their existing GPU path.
   const double scale = std::min({1., 1600. / stitched.cols, 900. / stitched.rows});
   const cv::Size size(std::max(1, cvRound(stitched.cols * scale)), std::max(1, cvRound(stitched.rows * scale)));
-  cv::Mat preview, ice;
+  cv::Mat preview;
   cv::resize(stitched, preview, size, 0, 0, cv::INTER_AREA);
   if (!cv::imwrite((staging / "paint-source.png").string(), preview))
     return absl::InternalError("Cannot write the ice mask source preview");
   // Playback reads rink_mask_0.png. Secondary detections contribute only to the combined geometry.
-  cv::resize(profile.masks.front(), ice, size, 0, 0, cv::INTER_NEAREST);
+  const cv::Mat ice = SampleIceBrushPreview(profile.masks.front(), size);
   cv::Mat tinted;
   cv::addWeighted(preview, .65, cv::Mat(size, preview.type(), cv::Scalar(80, 220, 60)), .35, 0., tinted);
   tinted.copyTo(preview, ice);
@@ -5692,7 +5636,7 @@ absl::Status paint_detected_rink_mask(
         if (!(stroke >> x >> y) || x < 0 || x >= size.width || y < 0 || y >= size.height || ++points > 12000)
           return absl::InvalidArgumentError("Invalid ice brush position or too many points");
         const cv::Point point(x, y);
-        draw_ice_brush_segment(
+        DrawIceBrushSegment(
             edited,
             erase && !erased.empty() ? &erased : nullptr,
             size,
