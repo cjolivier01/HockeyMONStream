@@ -43,6 +43,7 @@ stitching boundary.
 ## Build, Test, and Run
 - Debug build (all): `./bld` or `bazelisk build --config=debug //...`.
 - Release build (all): `./perf` or `bazelisk build --config=opt //...`.
+- AMD release build: `make perf-rocm` builds the CLI, desktop UI, and experiment task with ROCm and prepares the private GStreamer VA runtime.
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
 - ARM64/SBSA build (native non-Jetson, e.g. GB300): `make arm64` or `bazelisk build --config=opt --config=arm64 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.

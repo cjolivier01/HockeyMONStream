@@ -137,8 +137,8 @@ path are added. Tests read pixels back for comparison.
 ## Build and test
 
 Install a ROCm SDK compatible with the GPU, plus the repository's ordinary
-OpenCV, GStreamer, OpenGL, and C++ development dependencies. The portable
-targets do not need CUDA, TensorRT, or DeepStream SDKs.
+OpenCV, GStreamer, OpenGL, and C++ development dependencies. Building the
+private patched GStreamer VA runtime also requires `patchelf`.
 
 ```sh
 make amd-kernels
@@ -373,23 +373,24 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview with tracked-player boxes | Source/Stitched channels and Play/Rink diagnostics |
 | Desktop, jobs and publication | Saved Program playback and managed Program/4K archives | Additional live controls, exported job launch and highlight export |
 
-`make perf-rocm` intentionally passes `--config=rocm` to `//...` as a
-full-scope compatibility check, matching the target set of `make perf`. It is
-not an AMD application build: many targets still directly depend on NVIDIA
-libraries. Compute tests do not establish end-to-end AMD playback or export
-support.
+`make perf-rocm` builds the optimized AMD `hstream-cli`, `hstream-ui`, and
+`hstream-experiment-task` after preparing the private patched GStreamer VA
+runtime. Run the AMD qualification Make targets in the Build and test section
+to exercise the kernels, video, inference, and tracking paths.
 
 NVIDIA-only consumers use `bazel/cuda_dependencies.bzl` to keep their entire
 dependency graph on CUDA. The internal `cuda_only` build setting overrides the
 HIP request for those dependencies in HStream, hm-cupano and jetson-utils.
-Portable targets and the ROCm CLI/UI still select HIP in the same invocation;
-no target is removed from the build. A new NVIDIA-only consumer must put all
-its C++ dependencies behind this boundary, including CPU libraries, so the
-link does not combine two configured copies of the same shared library.
+In an explicit `//...` build with `--config=rocm`, portable targets and the
+ROCm CLI/UI select HIP alongside the NVIDIA-only consumers. A new NVIDIA-only
+consumer must put all its C++ dependencies behind this boundary, including CPU
+libraries, so the link does not combine two configured copies of the same shared
+library.
 The boundary is unchanged for ordinary CUDA and Jetson builds. It does not
 provide an AMD implementation of DeepStream, TensorRT or NPP workflows.
 
-This full compatibility build therefore needs both SDKs. CUDA discovery honors
+An explicit Bazel build of `//...` with `--config=rocm` needs both SDKs.
+CUDA discovery honors
 `CUDA_PATH` first, then `CUDA_HOME`, before the existing PATH-based discovery.
 The CUDA compiler dependency scan includes direct `lib64` entries and stubs,
 without following unrelated subdirectories in Debian's system library tree.

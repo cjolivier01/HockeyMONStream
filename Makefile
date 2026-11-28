@@ -85,7 +85,10 @@ perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 perf-rocm: private-amd-gstreamer
-	$(BAZEL) build --config=opt --config=rocm $(ROCM_REPO_ENV) $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) //...
+	$(BAZEL) build --config=opt --config=rocm $(ROCM_REPO_ENV) $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) \
+		//src/apps/hstream-cli:hstream-cli \
+		//src/apps/hstream-ui:hstream-ui \
+		//src/apps/hstream-ui:hstream-experiment-task
 
 debug:
 	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
@@ -285,7 +288,7 @@ print_targets:
 		'Build Outputs' \
 		'-------------' \
 		'perf           Build everything with --config=opt (auto-adds arm64/Blackwell host flags when needed).' \
-		'perf-rocm      Full optimized ROCm compatibility build (including unsupported NVIDIA-only targets).' \
+		'perf-rocm      Build the optimized AMD CLI, desktop UI, and experiment task.' \
 		'private-amd-gstreamer Build or reuse the private patched AMD VA runtime.' \
 		'debug          Build everything with --config=debug (auto-adds Blackwell host flags when needed).' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
