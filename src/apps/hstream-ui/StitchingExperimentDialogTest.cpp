@@ -127,14 +127,14 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms) {
   return false;
 }
 
-void add_options(StitchingExperimentDialog& dialog) {
+void add_options(StitchingExperimentDialog& dialog, int timeout_ms = 30000) {
   if (!widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->isEnabled()) {
     std::cerr << widget<QLabel>(dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
               << widget<QComboBox>(dialog, "stitchExperimentControlPointResolution")->toolTip().toStdString() << '\n';
     throw std::runtime_error("Cannot queue options while the editor is disabled");
   }
   widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->click();
-  if (!wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, 30000)) {
+  if (!wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, timeout_ms)) {
     std::cerr << widget<QLabel>(dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
               << widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->toPlainText().toStdString() << '\n';
     throw std::runtime_error("Queued workspace persistence did not finish");
@@ -652,7 +652,8 @@ void exercise_shared_queue_capacity(const QString& game, const QString& root) {
     points.append(QString::number(100 + i));
   auto* counts = widget<QLineEdit>(dialog, "stitchExperimentControlPoints");
   counts->setText(points.join(','));
-  add_options(dialog);
+  // Each of the 64 workspaces is independently committed and synced to disk.
+  add_options(dialog, 120000);
   auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
   require(rows->rowCount() == 64 && !add->isEnabled(), "The full shared queue must disable Add");
   counts->setText("250");
