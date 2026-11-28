@@ -18737,7 +18737,8 @@ bool reveal_fresh_control(HStreamWindow* window, QWidget* widget) {
       return bar->rect().contains(rect) && bar->tabAt(rect.center()) == index && !bar->childAt(rect.center());
     };
     for (int attempt = 0; !reachable() && attempt < 2 * tabs->count(); ++attempt) {
-      const auto desired = bar->tabRect(index).center().x() < 0 ? Qt::LeftArrow : Qt::RightArrow;
+      // The first part of a tab can be clipped while its center is still on screen.
+      const auto desired = bar->tabRect(index).left() < bar->rect().left() ? Qt::LeftArrow : Qt::RightArrow;
       QToolButton* arrow = nullptr;
       for (auto* button : bar->findChildren<QToolButton*>())
         if (button->isVisible() && button->isEnabled() && button->arrowType() == desired)
