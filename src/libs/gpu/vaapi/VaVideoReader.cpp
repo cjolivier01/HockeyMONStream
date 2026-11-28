@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hm::gpu {
@@ -14,6 +15,18 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 } // namespace
+
+void VaVideoFrame::SetFrameRate(int numerator, int denominator) {
+  if (int64_t(info.fps_n) * denominator == int64_t(numerator) * info.fps_d)
+    return;
+  sample.reset(gst_sample_make_writable(sample.release()));
+  GstCaps* caps = gst_caps_copy(gst_sample_get_caps(sample.get()));
+  gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, numerator, denominator, nullptr);
+  gst_sample_set_caps(sample.get(), caps);
+  gst_caps_unref(caps);
+  info.fps_n = numerator;
+  info.fps_d = denominator;
+}
 
 struct VaVideoReader::Impl {
   VaVideoReaderConfig config;
@@ -27,6 +40,7 @@ struct VaVideoReader::Impl {
   absl::Status failure;
   bool opened = false;
   GstClockTime previous = GST_CLOCK_TIME_NONE;
+  GstClockTime seek_start = GST_CLOCK_TIME_NONE;
   explicit Impl(const VaVideoReaderConfig& value) : config(value) {}
   ~Impl() {
     if (pipeline)
@@ -156,6 +170,7 @@ struct VaVideoReader::Impl {
     if (!status.ok())
       return status;
     previous = GST_CLOCK_TIME_NONE;
+    seek_start = time;
     return State(GST_STATE_PLAYING, deadline);
   }
 };
@@ -306,6 +321,14 @@ absl::StatusOr<std::optional<VaVideoFrame>> VaVideoReader::Read() {
     frame.info = dma.vinfo;
     frame.time = gst_segment_to_stream_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer));
     frame.duration = GST_BUFFER_DURATION(buffer);
+    const auto seek_start = std::exchange(impl_->seek_start, GST_CLOCK_TIME_NONE);
+    if (GST_CLOCK_TIME_IS_VALID(seek_start) && GST_CLOCK_TIME_IS_VALID(frame.time)) {
+      const auto seek_error = frame.time > seek_start ? frame.time - seek_start : seek_start - frame.time;
+      // qtdemux can clip a preceding B-frame to a nanosecond-scale tail at
+      // the seek boundary. It can share the requested frame's stream time.
+      if (seek_error <= 2 && frame.duration <= 2)
+        continue;
+    }
     if (!GST_CLOCK_TIME_IS_VALID(frame.time) || !GST_CLOCK_TIME_IS_VALID(frame.duration) || !frame.duration ||
         (GST_CLOCK_TIME_IS_VALID(impl_->previous) && frame.time <= impl_->previous))
       return impl_->Retire(absl::DataLossError("VA decoder returned invalid or non-increasing frame timestamps"));

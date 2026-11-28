@@ -162,6 +162,21 @@ jersey/action reductions. Its fixture arguments are described by
 
 Make ROCm targets discover `/opt/rocm`, falling back to an installed versioned
 `/opt/rocm-*` prefix. Override that selection with `ROCM_PATH=/path/to/rocm`.
+When MIGraphX lives in the HIP prefix, such as in a unified TheRock build,
+select that prefix with `ROCM_PATH`. With AMD's split apt layout, HStream also
+looks for the sibling `extras-<major>` prefix that matches the installed
+`core-<major>.<minor>` SDK. To choose a separate prefix explicitly, set
+`MIGRAPHX_PATH=/path/to/extras` in Make or
+`--repo_env=MIGRAPHX_PATH=/path/to/extras` in Bazel.
+
+For the split apt packages, include the core and extras library directories when
+running HStream or the inference and interop tests. The MIGraphX GPU plugin
+loads the core BLAS and MIOpen libraries at runtime.
+
+```sh
+export LD_LIBRARY_PATH="/opt/rocm/core-10.2/lib:/opt/rocm/extras-10/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
 Direct Bazel commands discover the toolkit at `/opt/rocm`; override them with
 `--repo_env=ROCM_PATH=/path/to/rocm`. Architectures are discovered with
 `rocm_agent_enumerator`, filtered to concrete `gfx` targets, and recorded with
@@ -222,10 +237,11 @@ exports, leaving the installed library, plugins and core unchanged. It builds
 private `libgstva-1.0` and the matching VA plugin against the installed
 development packages. Ubuntu 24.04 uses `gst-plugins-bad` 1.24.2 and needs both
 the descriptor and Main10 patches. Ubuntu 26.04 uses the 1.28.2 VA implementation
-with core 1.28.2: descriptor cleanup is upstream there, but Main10 still needs a
-version-specific patch. Source archives are SHA-pinned; the runtime retains its
-source, applied patches, build recipe and license. The recipe rejects unqualified
-version combinations.
+with core 1.28.2. Its private build closes descriptors only after a successful
+export, probes linear NV12 and P010 DMA-BUF support on Mesa, and fixes Main10
+signaling. Source archives are SHA-pinned. The runtime retains its source, applied
+patches, build recipe and license. The recipe rejects unqualified version
+combinations.
 
 ```bash
 scripts/build_amd_gstreamer.sh /tmp/hstream-private-gstva 8

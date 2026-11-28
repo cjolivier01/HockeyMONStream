@@ -1,0 +1,57 @@
+--- a/sys/va/gstvacaps.c
++++ b/sys/va/gstvacaps.c
+@@ -205,6 +205,24 @@
+   return TRUE;
+ }
+
++static gboolean
++supports_linear_dma_format (GstVaDisplay * display, GstVideoFormat format,
++    guint32 fourcc, guint usage_hint, gint width, gint height)
++{
++  GstVideoInfoDmaDrm info;
++  GstAllocator *allocator;
++  gboolean supported;
++
++  gst_video_info_dma_drm_init (&info);
++  gst_video_info_set_format (&info.vinfo, format, width, height);
++  info.drm_fourcc = fourcc;
++  info.drm_modifier = DRM_FORMAT_MOD_LINEAR;
++  allocator = gst_va_dmabuf_allocator_new (display);
++  supported = gst_va_dmabuf_allocator_set_format (allocator, &info, usage_hint);
++  gst_object_unref (allocator);
++  return supported;
++}
++
+ GstCaps *
+ gst_va_create_dma_caps (GstVaDisplay * display, VAEntrypoint entrypoint,
+     GArray * formats, gint min_width, gint max_width,
+@@ -232,12 +250,23 @@
+       continue;
+
+     modifier = gst_va_dmabuf_get_modifier_for_format (display, fmt, usage_hint);
+-    if (modifier == DRM_FORMAT_MOD_INVALID)
+-      continue;
+-
+-    drm_fmt_str = gst_video_dma_drm_fourcc_to_string (fourcc, modifier);
+-
+-    g_ptr_array_add (drm_formats_str, drm_fmt_str);
++    if (modifier != DRM_FORMAT_MOD_INVALID) {
++      drm_fmt_str = gst_video_dma_drm_fourcc_to_string (fourcc, modifier);
++      g_ptr_array_add (drm_formats_str, drm_fmt_str);
++    }
++
++    /* Mesa can default to tiled video surfaces while still accepting an
++     * explicit linear allocation for HIP DMA-BUF interoperability. */
++    if (modifier != DRM_FORMAT_MOD_LINEAR
++        && GST_VA_DISPLAY_IS_IMPLEMENTATION (display, MESA_GALLIUM)
++        && (fmt == GST_VIDEO_FORMAT_NV12 || fmt == GST_VIDEO_FORMAT_P010_10LE)
++        && supports_linear_dma_format (display, fmt, fourcc, usage_hint,
++            CLAMP (64, min_width, max_width),
++            CLAMP (64, min_height, max_height))) {
++      drm_fmt_str = gst_video_dma_drm_fourcc_to_string (fourcc,
++          DRM_FORMAT_MOD_LINEAR);
++      g_ptr_array_add (drm_formats_str, drm_fmt_str);
++    }
+   }
+
+   if (drm_formats_str->len == 0)

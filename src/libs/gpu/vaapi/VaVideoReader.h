@@ -36,6 +36,8 @@ struct VaVideoFrame {
   // The VA surface is in coded coordinates. The following HIP color conversion
   // applies the chapter matrix in the same pass that writes stitcher inputs.
   media::DisplayTransform display{};
+
+  void SetFrameRate(int numerator, int denominator);
 };
 
 // Local MP4 video reader with explicitly selected VA decoding and linear
