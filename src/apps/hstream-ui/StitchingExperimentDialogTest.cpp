@@ -1579,6 +1579,19 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->rowCount() == 1, "Retry fixture must expose its main calibration");
+  add_options(dialog);
+  {
+    // Remove a row ahead of the edited candidate, then queue an unrelated row
+    // in the other dialog while this editor still has the older table order.
+    StitchingExperimentDialog other(
+        game, runner, root, root + "/_hockeymon/config.yaml", environment, 350, 2, "00:00:00");
+    auto* other_table = widget<QTableWidget>(other, "stitchExperimentCandidates");
+    other_table->selectRow(1);
+    widget<QPushButton>(other, "removeStitchExperimentFromBatchButton")->click();
+    require(other_table->rowCount() == 1, "Could not remove the earlier queue row");
+    add_options(other);
+    require(other_table->rowCount() == 2 && other_table->item(1, 1)->text() == "350", "Cannot queue unrelated solve");
+  }
   table->selectRow(0);
   bool finished = false;
   std::string failure;
@@ -1616,7 +1629,7 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
           editor->editedSet().frames[0].matches[0].left.x == 17.25f && undo->isEnabled() &&
               (status->text().contains("NOT_FOUND") || status->text().contains("FAILED_PRECONDITION")),
           "Failed save must preserve edited points, history, and a visible error");
-      require(table->rowCount() == 1 && !QFile::exists(marker), "Failed save must not publish or run a candidate");
+      require(table->rowCount() == 2 && !QFile::exists(marker), "Failed save must not publish or run a candidate");
       undo->click();
       require(editor->editedSet().frames[0].matches[0].left.x == 10.0f, "Undo history must survive failed saving");
       redo->click();
@@ -1624,12 +1637,14 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
       save->click();
       require(
           wait_until([&] { return !editor || !editor->isVisible(); }, 30000), "Successful retry did not close editor");
-      require(table->rowCount() == 2, "Successful retry must publish exactly one new candidate");
+      require(table->rowCount() == 3, "Starting the edited solve must refresh the shared queue");
       const auto store = OpenStitchingExperimentStore(game.toStdString());
       require(store.ok(), "Cannot inspect retry catalog");
       const auto catalog = LoadStitchingExperimentStore(*store);
-      require(catalog.ok() && catalog->experiments.size() == 1, "Successful retry must durably save one candidate");
-      const auto& workspace = catalog->experiments.front().workspace;
+      require(
+          catalog.ok() && catalog->experiments.size() == 2 && catalog->experiments.front().state == "queued",
+          "Starting the edited candidate must preserve the unrelated queued solve");
+      const auto& workspace = catalog->experiments.back().workspace;
       require(workspace.settings.manual_control_points.has_value(), "Retry candidate must retain manual identity");
       const auto saved = LoadCalibrationMatches(workspace.game_directory, *workspace.settings.manual_control_points);
       require(
@@ -1651,6 +1666,14 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
   require(
       wait_until([&] { return widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->isEnabled(); }, 30000),
       "Retry fixture runner did not finish");
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot inspect the finished match retry");
+  const auto final = LoadStitchingExperimentStore(*store);
+  require(
+      final.ok() && final->experiments.size() == 2 && final->experiments.front().state == "queued" &&
+          final->experiments.back().state == "failed" &&
+          final->experiments.back().workspace.settings.manual_control_points,
+      "Only the edited solve may run after its original table position changes");
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", false);
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Retry dialog did not close after its runner stopped");
 }
@@ -2899,6 +2922,14 @@ void exercise_workflow_frame_selection(const QString& game, const QString& root)
       completed->experiments.back().selection_fingerprint.empty() &&
           completed->experiments.back().workspace.settings.frame_count == 1,
       "One-frame solve must keep its own anchor policy");
+  rows->selectRow(0);
+  remove_completed_experiments(variants, false, 5);
+  remove_completed_experiments(variants, true, 5);
+  const auto remaining = LoadStitchingExperimentStore(*store);
+  require(
+      remaining.ok() && remaining->experiments.size() == 1 &&
+          remaining->experiments.front().workspace.settings.frame_count == 1,
+      "Removing the original frame owner must include its cached sibling and all four dependent variants");
 }
 
 #ifdef Q_OS_LINUX
@@ -3371,8 +3402,13 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
   const auto original_config = read(game + "/_hockeymon/config.yaml");
-  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   add_options(dialog);
+  auto other = std::make_unique<StitchingExperimentDialog>(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 150, 1, "00:00:00");
+  add_options(*other);
+  require(
+      widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == 1,
+      "The first dialog should still display its original queue before Start");
   auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
   auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
@@ -3385,6 +3421,21 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   require(
       table->rowCount() == 2 && table->item(0, 5)->text() == "Ready" && table->item(1, 5)->text() == "Ready",
       "Synthetic candidates must complete before testing removal and promotion failure");
+  const auto idle = [&] {
+    const auto owner = hm::game_operation::Inspect(game.toStdString());
+    return owner.ok() && !owner->has_value();
+  };
+  require(wait_until(idle, 5000), "Completed local batch did not release the game");
+  const QString catalog_path = game + "/_hockeymon/stitching-experiments/index.yaml";
+  const auto completed_catalog = read(catalog_path);
+  widget<QPushButton>(*other, "startStitchExperimentBatchButton")->click();
+  auto* refreshed = widget<QTableWidget>(*other, "stitchExperimentCandidates");
+  require(
+      refreshed->item(0, 5)->text() == "Ready" && refreshed->item(1, 5)->text() == "Ready" &&
+          !widget<QPushButton>(*other, "startStitchExperimentBatchButton")->isEnabled() && idle() &&
+          read(catalog_path) == completed_catalog,
+      "Starting from the other dialog must retain both completed solves and release its empty-batch claim");
+  other.reset();
   require(tabs->currentIndex() == 1, "Batch completion must not steal the chosen Workflow tab");
   table->selectRow(1);
   tabs->setCurrentIndex(1);

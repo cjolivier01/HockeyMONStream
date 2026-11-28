@@ -129,6 +129,8 @@ changing the control-point limit, matcher, image size, rotation or either advanc
 new solve using those pairs. For example, two four-frame AKAZE candidates can use the same images with
 different CP limits or with Epipolar RANSAC enabled for only one of them. A later batch can reuse the frames
 from a completed distributed result, including a sibling that used the original scan.
+Add and Start batch refresh the game's saved queue, so a second open dialog can pick up new candidates and
+completed frame selections without reopening. Repeating the same options in one dialog skips that combination.
 Each frame count has its own selection and first search duration. A different count reuses its own saved
 selection if available. An incompatible reference time for an established count is an error.
 Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.
