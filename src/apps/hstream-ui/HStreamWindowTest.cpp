@@ -18670,6 +18670,13 @@ bool fresh_config_projection_matches(const YAML::Node& actual, const YAML::Node&
   return YAML::Dump(actual) == YAML::Dump(expected);
 }
 
+bool fresh_blend_unchanged(const YAML::Node& saved, const YAML::Node& admitted) {
+  YAML::Node before, after;
+  const bool had_blend = lookup_yaml_path(saved, {"stitching", "blend_mode"}, &before);
+  const bool has_blend = lookup_yaml_path(admitted, {"stitching", "blend_mode"}, &after);
+  return had_blend == has_blend && (!had_blend || YAML::Dump(before) == YAML::Dump(after));
+}
+
 bool fresh_admitted_calibration_matches(const QByteArray& captured, const QJsonObject& expected) {
   try {
     const auto actual = YAML::Load(captured.toStdString());
@@ -18730,7 +18737,8 @@ bool reveal_fresh_control(HStreamWindow* window, QWidget* widget) {
       return bar->rect().contains(rect) && bar->tabAt(rect.center()) == index && !bar->childAt(rect.center());
     };
     for (int attempt = 0; !reachable() && attempt < 2 * tabs->count(); ++attempt) {
-      const auto desired = bar->tabRect(index).center().x() < 0 ? Qt::LeftArrow : Qt::RightArrow;
+      // The first part of a tab can be clipped while its center is still on screen.
+      const auto desired = bar->tabRect(index).left() < bar->rect().left() ? Qt::LeftArrow : Qt::RightArrow;
       QToolButton* arrow = nullptr;
       for (auto* button : bar->findChildren<QToolButton*>())
         if (button->isVisible() && button->isEnabled() && button->arrowType() == desired)
@@ -18834,6 +18842,14 @@ bool test_fresh_calibration_evidence_controls(HStreamWindow* window) {
           rejected_disabled &&
               !reveal_fresh_control(window, window->findChild<QWidget*>("stitchCameraConfigurationCombo")),
           "Evidence navigation cannot enable controls or reveal the Defaults-only global profile"))
+    return false;
+  const auto roles_only = YAML::Load("{game: {videos: {}}}");
+  const auto reference_only = YAML::Load("{stitching: {stitch_frame_time: '00:00:05'}}");
+  const auto saved_blend = YAML::Load("{stitching: {blend_mode: laplacian}}");
+  if (!expect(fresh_blend_unchanged(roles_only, reference_only) && fresh_blend_unchanged(saved_blend, saved_blend) &&
+                  !fresh_blend_unchanged(roles_only, saved_blend) && !fresh_blend_unchanged(saved_blend, reference_only) &&
+                  !fresh_blend_unchanged(saved_blend, YAML::Load("{stitching: {blend_mode: alpha}}")),
+              "Fresh Play must preserve both the presence and value of the saved blend setting"))
     return false;
   auto expected = HStreamWindowTestAccess::freshCalibrationExpectedConfig(window);
   auto captured = YAML::Load(expected["required_yaml"].toString().toStdString());
@@ -19334,7 +19350,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     const auto original = YAML::Load(saved_baseline.bytes.toStdString());
     if (!expect(
             fresh_admitted_calibration_matches(observer->admitted.bytes, expected_config) &&
-                YAML::Dump(admitted["stitching"]["blend_mode"]) == YAML::Dump(original["stitching"]["blend_mode"]) &&
+                fresh_blend_unchanged(original, admitted) &&
                 save_clicks == 0,
             "Captured Starting config must persist the exact reference, starts, optics and calibration subset without saving blend"))
       return false;
