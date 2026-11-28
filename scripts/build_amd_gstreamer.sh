@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Private GStreamer 1.24.2 VA support/plugin with descriptor-probe cleanup
+# Private GStreamer VA support/plugin with descriptor-probe cleanup
 # and correct Main10 signaling. The installed SDK stays untouched.
 set -euo pipefail
 ensure=0
@@ -35,10 +35,10 @@ case "$gst_version:$va_version" in
     ;;
   1.28.2:1.28.2)
     # Ubuntu 26.04 packages the 1.28.2 VA implementation with core 1.28.2.
-    # Descriptor cleanup is upstream; only the Main10 signal still needs fixing.
     source_version=1.28.2
     source_sha256=6467e3964828f4d7d08bfe1fbb4d76287a1c8fa76674e59e101a149c020fefd7
-    patches=(gstreamer-va-1.28.2-hevc-main10.patch)
+    patches=(gstreamer-va-1.28.2-probe-fds.patch
+      gstreamer-va-1.28.2-linear-dmabuf.patch gstreamer-va-1.28.2-hevc-main10.patch)
     ;;
   *)
     echo "Unsupported installed GStreamer core/VA versions: $gst_version/$va_version." >&2

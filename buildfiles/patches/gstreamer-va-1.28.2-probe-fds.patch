@@ -1,0 +1,48 @@
+--- a/gst-libs/gst/va/gstvaallocator.c
++++ b/gst-libs/gst/va/gstvaallocator.c
+@@ -551,7 +551,7 @@
+ _close_fds (VADRMPRIMESurfaceDescriptor * desc)
+ {
+ #ifndef G_OS_WIN32
+-  for (guint32 i = 0; i < desc->num_objects; i++) {
++  for (guint32 i = 0; i < MIN (desc->num_objects, G_N_ELEMENTS (desc->objects)); i++) {
+     gint fd = desc->objects[i].fd;
+     close (fd);
+   }
+@@ -597,8 +597,9 @@
+
+   export_flags |= VA_EXPORT_SURFACE_READ_WRITE;
+
++  /* Failed exports can leave numbers for fds the driver already closed. */
+   if (!va_export_surface_to_dmabuf (display, surface, export_flags, &desc))
+-    goto failed;
++    goto destroy_surface;
+
+   if (GST_VIDEO_INFO_N_PLANES (info) != desc.num_layers)
+     goto failed;
+@@ -612,7 +613,7 @@
+         GST_FOURCC_ARGS (desc.fourcc));
+   }
+
+-  if (desc.num_objects == 0) {
++  if (desc.num_objects == 0 || desc.num_objects > G_N_ELEMENTS (desc.objects)) {
+     GST_ERROR ("Failed to export surface to dmabuf");
+     goto failed;
+   }
+@@ -642,12 +643,10 @@
+   return TRUE;
+
+ failed:
+-  {
+-    /* Free DMAbufs on failure */
+-    _close_fds (&desc);
+-    va_destroy_surfaces (display, &surface, 1);
+-    return FALSE;
+-  }
++  _close_fds (&desc);
++destroy_surface:
++  va_destroy_surfaces (display, &surface, 1);
++  return FALSE;
+ }
+
+ /**

@@ -38,7 +38,6 @@ struct VaVideoPlaylist::Impl {
   GstClockTime duration{}, previous{GST_CLOCK_TIME_NONE};
   uint64_t frames{};
   std::optional<uint64_t> expected_frame;
-  bool allow_seek_prefix{false};
   bool constant_rate{true};
   size_t chapter{};
   bool positioned{false}, opened{false}, eos{false}, retired{false};
@@ -167,7 +166,6 @@ absl::Status VaVideoPlaylist::SeekFrame(uint64_t frame) {
   impl.eos = false;
   impl.previous = GST_CLOCK_TIME_NONE;
   impl.expected_frame = frame;
-  impl.allow_seek_prefix = frame > 0;
   return absl::OkStatus();
 }
 
@@ -197,7 +195,6 @@ absl::StatusOr<std::optional<VaVideoFrame>> VaVideoPlaylist::Read() {
         return opened;
       if (impl.expected_frame)
         impl.expected_frame = 0;
-      impl.allow_seek_prefix = false;
       continue;
     }
     auto frame = std::move(**read);
@@ -213,19 +210,17 @@ absl::StatusOr<std::optional<VaVideoFrame>> VaVideoPlaylist::Read() {
         return impl.Retire(next.status());
       const auto duration = *next - *expected;
       const auto time_error = frame.time > *expected ? frame.time - *expected : *expected - frame.time;
-      if (impl.allow_seek_prefix) {
-        impl.allow_seek_prefix = false;
-        // qtdemux's B-frame segment translation can carry one nanosecond
-        // differently from the MP4 clock. Discard at most one clipped tail of
-        // the preceding picture; never expose it as the requested frame.
-        if (time_error <= 1 && frame.duration <= 1 && duration > 2)
-          continue;
+      // Demuxers floor absolute timestamps and durations independently.
+      const auto duration_error = frame.duration > duration ? frame.duration - duration : duration - frame.duration;
+      bool matches_duration = duration_error <= 1;
+      if (!matches_duration && index + 1 == chapter.video.frames && frame.duration < duration) {
+        // The final edit may end on the coarser movie clock. Accept a clipped
+        // last picture only when it ends at the demuxer's segment boundary.
+        const auto* segment = gst_sample_get_segment(frame.sample.get());
+        const auto stop = gst_segment_to_stream_time(segment, GST_FORMAT_TIME, segment->stop);
+        matches_duration = GST_CLOCK_TIME_IS_VALID(stop) && stop >= frame.time && stop - frame.time == frame.duration;
       }
-      // Demuxers floor absolute timestamps and frame durations independently,
-      // so a correct duration can differ from the interval by one nanosecond.
-      // Header rate agreement alone does not prove a constant presentation grid.
-      if (time_error > 1 || !GST_CLOCK_TIME_IS_VALID(frame.duration) ||
-          (frame.duration > duration ? frame.duration - duration : duration - frame.duration) > 1)
+      if (time_error > 1 || !matches_duration)
         return impl.Retire(absl::DataLossError(
             "Decoded chapter violates its constant frame grid at frame " + std::to_string(index) +
             ": time=" + std::to_string(frame.time) + " expected=" + std::to_string(*expected) +
@@ -234,9 +229,12 @@ absl::StatusOr<std::optional<VaVideoFrame>> VaVideoPlaylist::Read() {
     }
     if (frame.time < uint64_t(chapter.video.start_ns) ||
         frame.time - chapter.video.start_ns >= uint64_t(chapter.video.duration_ns) ||
-        frame.info.width != chapter.video.width || frame.info.height != chapter.video.height ||
-        int64_t(frame.info.fps_n) * chapter.video.fps_d != int64_t(chapter.video.fps_n) * frame.info.fps_d)
+        frame.info.width != chapter.video.width || frame.info.height != chapter.video.height)
       return impl.Retire(absl::DataLossError("Decoded chapter differs from its video metadata"));
+    // qtdemux can include edit-list gaps when estimating a caps framerate.
+    // Use the pinned video track's rate, while retaining decoded PTS and
+    // durations and checking every frame against the MP4 grid for indexed reads.
+    frame.SetFrameRate(chapter.video.fps_n, chapter.video.fps_d);
     frame.display = chapter.video.display;
     frame.time = chapter.start + frame.time - chapter.video.start_ns;
     if (GST_CLOCK_TIME_IS_VALID(impl.previous) && frame.time <= impl.previous)

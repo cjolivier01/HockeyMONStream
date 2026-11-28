@@ -184,16 +184,8 @@ absl::StatusOr<std::optional<VaStereoFrame>> VaStereoVideo::Read() {
       if (!*discarded)
         return impl.Retire(absl::DataLossError("Stereo camera ended inside a decimation group"));
     }
-    if (impl.rates.step[camera] > 1) {
-      auto& kept = pair.cameras[camera];
-      kept.sample.reset(gst_sample_make_writable(kept.sample.release()));
-      GstCaps* caps = gst_caps_copy(gst_sample_get_caps(kept.sample.get()));
-      gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, impl.rates.fps_n, impl.rates.fps_d, nullptr);
-      gst_sample_set_caps(kept.sample.get(), caps);
-      gst_caps_unref(caps);
-      kept.info.fps_n = impl.rates.fps_n;
-      kept.info.fps_d = impl.rates.fps_d;
-    }
+    if (impl.rates.step[camera] > 1)
+      pair.cameras[camera].SetFrameRate(impl.rates.fps_n, impl.rates.fps_d);
   }
   const auto time = impl.Time(impl.next[0]), next_time = impl.Time(impl.next[0] + impl.rates.step[0]);
   if (!time.ok())

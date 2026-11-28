@@ -37,6 +37,12 @@ hm::gpu::VaVideoFrame Frame(hm::gpu::VaVideoPlaylist& playlist, unsigned index) 
   auto frame = Take(playlist.Read());
   Check(frame.has_value(), "Unexpected playlist EOS");
   Check(frame->time == index * 40 * GST_MSECOND, "Audio tail or chapter origin shifted video time");
+  int numerator = 0, denominator = 0;
+  const auto* caps = gst_sample_get_caps(frame->sample.get());
+  Check(
+      gst_structure_get_fraction(gst_caps_get_structure(caps, 0), "framerate", &numerator, &denominator) &&
+          numerator == 25 && denominator == 1 && frame->info.fps_n == numerator && frame->info.fps_d == denominator,
+      "Playlist must report the MP4 video track rate in both caps and frame info");
   return std::move(*frame);
 }
 } // namespace

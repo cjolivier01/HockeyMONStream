@@ -3,10 +3,11 @@ BAZEL ?= bazelisk
 BUILD_CONFIG ?= opt
 HOST_OS_VERSION := $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION_ID")
 AMD_GSTREAMER_CACHE_ROOT ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)
-AMD_GSTREAMER_RECIPE_REVISION ?= 1
+AMD_GSTREAMER_RECIPE_REVISION ?= $(if $(filter 26.04,$(HOST_OS_VERSION)),2,1)
 AMD_GSTREAMER_PREFIX ?= $(AMD_GSTREAMER_CACHE_ROOT)/hstream/gstva-$(HOST_OS_VERSION)-r$(AMD_GSTREAMER_RECIPE_REVISION)
 ROCM_PATH ?= $(shell if [ -x /opt/rocm/bin/hipcc ]; then printf '%s' /opt/rocm; else for rocm_root in /opt/rocm-*; do if [ -x "$$rocm_root/bin/hipcc" ]; then printf '%s' "$$rocm_root"; break; fi; done; fi)
-ROCM_REPO_ENV := $(if $(strip $(ROCM_PATH)),--repo_env=ROCM_PATH=$(ROCM_PATH),)
+ROCM_REPO_ENV := $(if $(strip $(ROCM_PATH)),--repo_env=ROCM_PATH="$(ROCM_PATH)",) \
+	$(if $(strip $(MIGRAPHX_PATH)),--repo_env=MIGRAPHX_PATH="$(MIGRAPHX_PATH)",)
 
 # Forward `make -j N` to Bazel as --jobs=N. GNU make normalizes -jN/-j N/--jobs=N
 # into a single "-jN" word in MAKEFLAGS; a bare "-j" (unlimited) maps to Bazel's
@@ -67,7 +68,7 @@ test-amd-video: private-amd-gstreamer
 	"$(AMD_GSTREAMER_PREFIX)/run" $(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
 
 test-amd-inference:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
 
 test-amd-tracking:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
