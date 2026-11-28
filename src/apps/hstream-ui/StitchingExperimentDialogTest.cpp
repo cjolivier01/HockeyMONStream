@@ -608,6 +608,78 @@ void exercise_match_selection_queue(const QString& game, const QString& root) {
   }
 }
 
+void exercise_shared_queue_capacity(const QString& game, const QString& root) {
+  StitchingExperimentDialog dialog(
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      100,
+      1,
+      "00:00:00");
+  dialog.show();
+  auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
+  auto* rows = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(!start->isEnabled(), "A newly opened empty queue must disable Start");
+  {
+    StitchingExperimentDialog writer(
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        220,
+        1,
+        "00:00:00");
+    add_options(writer);
+  }
+  require(
+      wait_until([&] { return start->isEnabled(); }, 5000) && rows->rowCount() == 0,
+      "A new external candidate must enable Start without changing the displayed rows");
+  const auto idle = hm::game_operation::Inspect(game.toStdString());
+  require(idle.ok() && !idle->has_value(), "Observing an external queue must leave the game unowned");
+  start->click();
+  require(
+      wait_until(
+          [&] { return widget<QLabel>(dialog, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+          10000) &&
+          rows->rowCount() == 1 && rows->item(0, 1)->text() == "220",
+      "Start from an initially empty observer must load and run the new candidate");
+  discard_experiments(dialog);
+  QStringList points;
+  for (int i = 0; i < 64; ++i)
+    points.append(QString::number(100 + i));
+  auto* counts = widget<QLineEdit>(dialog, "stitchExperimentControlPoints");
+  counts->setText(points.join(','));
+  add_options(dialog);
+  auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
+  require(rows->rowCount() == 64 && !add->isEnabled(), "The full shared queue must disable Add");
+  counts->setText("250");
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot inspect the full queue");
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 64, "Full queue was not committed");
+  const auto key = catalog->experiments.front().workspace.game_directory.lexically_relative(store->directory).string();
+  require(RemoveStitchingExperiments(*store, {key}).ok(), "Cannot free a slot from another client");
+  require(
+      wait_until([&] { return add->isEnabled(); }, 5000) && rows->rowCount() == 64 && counts->text() == "250",
+      "An external removal must enable Add while preserving the open matrix and draft");
+  add_options(dialog);
+  require(
+      rows->rowCount() == 64 && rows->item(63, 1)->text() == "250" && !add->isEnabled(),
+      "Add must refresh the full queue and use exactly the freed slot");
+  require(DiscardStitchingExperimentStore(*store).ok(), "Cannot discard the full queue from another client");
+  require(
+      wait_until([&] { return add->isEnabled() && !start->isEnabled(); }, 5000) &&
+          !std::filesystem::exists(store->directory),
+      "Observing an externally discarded store must expose Add without recreating any files");
+  add_options(dialog);
+  require(
+      rows->rowCount() == 1 && rows->item(0, 1)->text() == "250" && start->isEnabled(),
+      "Explicit Add must recreate a discarded store and queue only the current draft");
+}
+
 void exercise_filtering_queue(const QString& game, const QString& root) {
   {
     StitchingExperimentDialog dialog(
@@ -4664,6 +4736,11 @@ int main(int argc, char** argv) {
         std::cout << "Stitching experiment layout checks passed\n";
         return 0;
       }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_SHARED_QUEUE_ONLY") != 0) {
+        exercise_shared_queue_capacity(make_game("queue-capacity"), fixture.path());
+        std::cout << "Stitching shared queue availability checks passed\n";
+        return 0;
+      }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_BLEND_ONLY") != 0) {
         exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
         exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
@@ -4737,6 +4814,7 @@ int main(int argc, char** argv) {
       exercise_workflow_frame_selection(make_game("workflow-selection"), fixture.path());
       exercise_blend_preview(make_game("blend-preview"), fixture.path());
       exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
+      exercise_shared_queue_capacity(make_game("queue-capacity"), fixture.path());
       exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());
       exercise_inspection_during_batch(make_game("batch-browse"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());

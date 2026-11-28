@@ -94,6 +94,7 @@
 #include <vector>
 
 #ifdef Q_OS_UNIX
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
@@ -671,6 +672,15 @@ struct StitchingExperimentDialog::Impl {
   QProgressBar* progress{nullptr};
   LogTextEdit* log{nullptr};
   std::unique_ptr<QTemporaryDir> session;
+  struct QueueAvailability {
+    int queued = 0;
+    bool retryable = false;
+    bool operator==(const QueueAvailability& other) const {
+      return queued == other.queued && retryable == other.retryable;
+    }
+  };
+  std::optional<QueueAvailability> observed_queue;
+  std::optional<std::array<int64_t, 5>> observed_index;
   std::optional<StitchingExperimentStore> store;
   QString store_error;
   std::vector<Candidate> candidates;
@@ -738,6 +748,8 @@ struct StitchingExperimentDialog::Impl {
   }
 
   bool claim_local_operation() {
+    observed_index.reset();
+    observed_queue.reset();
     if (!local_operation_token.isEmpty()) {
       if (local_cleanup_unconfirmed()) {
         show_status("Previous experiment cleanup has no verified supervisor receipt; retaining ownership.", true);
@@ -1038,13 +1050,70 @@ struct StitchingExperimentDialog::Impl {
          (candidate.stored && candidate.stored->state == "frozen"));
   }
 
+  static bool retryable_record(const StoredStitchingExperiment& row) {
+    return !row.workflow_active && row.process_session_id == 0 && row.process_token.empty() &&
+        row.state != "quarantined" && (row.state == "failed" || row.state == "frozen" || !row.workflow_id.empty());
+  }
+
   static bool retryable_candidate(const Candidate& candidate) {
     return !candidate.main_calibration && !candidate.complete && !candidate.queued && candidate.workspace &&
-        candidate.stored && !candidate.selection_reuse_blocked && !candidate.stored->workflow_active &&
-        candidate.stored->process_session_id == 0 && candidate.stored->process_token.empty() &&
-        candidate.stored->state != "quarantined" &&
-        (candidate.stored->state == "failed" || candidate.stored->state == "frozen" ||
-         !candidate.stored->workflow_id.empty());
+        candidate.stored && !candidate.selection_reuse_blocked && retryable_record(*candidate.stored);
+  }
+
+  bool store_directory_missing() const {
+    struct stat info{};
+    return ::lstat(store->directory.c_str(), &info) != 0 && errno == ENOENT;
+  }
+
+  void set_observed_queue(std::optional<QueueAvailability> availability) {
+    if (availability == observed_queue)
+      return;
+    observed_queue = availability;
+    update_controls();
+  }
+
+  void observe_queue_availability() {
+    if (!store || !store_error.isEmpty() || !dialog->isVisible() || !local_operation_token.isEmpty() ||
+        (workflow && (workflow->active() || workflow->busy())) || closing)
+      return;
+    // index.yaml is atomically replaced. A stat also observes remote NFS
+    // publications, which do not generate local filesystem watcher events.
+    struct stat stamp{};
+    if (::lstat((store->directory / "index.yaml").c_str(), &stamp) != 0) {
+      if (errno == ENOENT && store_directory_missing()) {
+        observed_index.reset();
+        set_observed_queue(QueueAvailability{});
+      }
+      return;
+    }
+    if (!S_ISREG(stamp.st_mode))
+      return;
+    const std::array<int64_t, 5> revision{
+        int64_t(stamp.st_dev), int64_t(stamp.st_ino), stamp.st_size, stamp.st_mtim.tv_sec, stamp.st_mtim.tv_nsec};
+    if (observed_index == revision)
+      return;
+    auto catalog = LoadStitchingExperimentStore(*store, /*advisory=*/true);
+    if (!catalog.ok())
+      return;
+    std::map<std::string, const Candidate*> known;
+    for (const auto& candidate : candidates)
+      if (candidate.stored)
+        known.emplace(catalog_key(*candidate.stored), &candidate);
+    QueueAvailability availability;
+    bool changed = known.size() != catalog->experiments.size();
+    for (const auto& record : catalog->experiments) {
+      const auto local = known.find(catalog_key(record));
+      if (local != known.end() && local->second->stored->revision == record.revision) {
+        availability.queued += local->second->queued;
+        availability.retryable |= retryable_candidate(*local->second);
+      } else {
+        changed = true;
+        availability.queued += record.state == "queued" && record.workflow_id.empty();
+        availability.retryable |= record.state != "complete" && retryable_record(record);
+      }
+    }
+    observed_index = revision;
+    set_observed_queue(changed ? std::make_optional(availability) : std::nullopt);
   }
 
   void update_controls() {
@@ -1080,9 +1149,11 @@ struct StitchingExperimentDialog::Impl {
     }
     const bool editing_batch = store && store_error.isEmpty() && !cleanup_unconfirmed && !workflow_busy && !remote &&
         !active_batch && !preview_owned && !promoting && !stopping && !closing;
-    const auto queued_count =
-        std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
-    const auto retry_count = std::count_if(candidates.begin(), candidates.end(), retryable_candidate);
+    const auto queued_count = observed_queue
+        ? observed_queue->queued
+        : std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
+    const bool retryable = observed_queue ? observed_queue->retryable
+                                          : std::any_of(candidates.begin(), candidates.end(), retryable_candidate);
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
@@ -1090,7 +1161,7 @@ struct StitchingExperimentDialog::Impl {
     clear_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
-    start_batch->setEnabled(editing_batch && (queued_count > 0 || retry_count > 0));
+    start_batch->setEnabled(editing_batch && (queued_count > 0 || retryable));
     start_batch->setToolTip(
         "Run queued candidates and retry unfinished candidates still in this list. Successful stages are reused.");
     cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing && !close_after_workflow);
@@ -2701,6 +2772,16 @@ struct StitchingExperimentDialog::Impl {
     if (!claim_local_operation()) {
       update_controls();
       return std::nullopt;
+    }
+    if (store_directory_missing()) {
+      auto reopened = OpenStitchingExperimentStore(game_directory.toStdString());
+      if (!reopened.ok()) {
+        show_status(QString::fromStdString(reopened.status().ToString()), true);
+        finish_queue_planning();
+        return std::nullopt;
+      }
+      store = *reopened;
+      session.reset();
     }
     auto catalog = LoadStitchingExperimentStore(*store);
     if (!catalog.ok()) {
@@ -4973,6 +5054,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   };
   s.workflow->exportRequested = [&s] { s.submit_workflow(true); };
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
+  auto* catalog_poll = new QTimer(this);
+  connect(catalog_poll, &QTimer::timeout, this, [&s] { s.observe_queue_availability(); });
+  catalog_poll->start(s.operation_poll->interval());
   s.restore_persistent_store(s.initial_settings);
   if (!s.feature_settings_error.isEmpty())
     s.show_status(s.feature_settings_error, true);

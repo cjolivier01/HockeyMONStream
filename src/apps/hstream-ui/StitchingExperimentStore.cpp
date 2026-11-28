@@ -631,7 +631,8 @@ absl::StatusOr<std::unique_ptr<StoreLock>> acquire(
     const StitchingExperimentStore& store,
     bool validate_owner = true,
     bool create = false,
-    bool allow_pending_discard = false) {
+    bool allow_pending_discard = false,
+    bool advisory = false) {
   require(
       store.directory.is_absolute() && store.directory == store.directory.lexically_normal() &&
           store.game_directory.is_absolute() && store.game_directory == store.game_directory.lexically_normal(),
@@ -649,13 +650,18 @@ absl::StatusOr<std::unique_ptr<StoreLock>> acquire(
   // This inode survives explicit cache deletion. A lock inside the removable
   // directory would let a concurrent opener create a second lock during discard.
   lock->descriptor.value = ::openat(
-      game->descriptor(), ".stitching-experiments.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600);
+      game->descriptor(),
+      ".stitching-experiments.lock",
+      (advisory ? O_RDONLY : O_CREAT | O_RDWR) | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+      0600);
   if (lock->descriptor.value < 0)
     return io_error("Cannot open experiment store lock");
   struct stat metadata{};
   if (::fstat(lock->descriptor.value, &metadata) != 0 || !S_ISREG(metadata.st_mode))
     return absl::FailedPreconditionError("Experiment store lock is not a regular file");
-  while (::flock(lock->descriptor.value, LOCK_EX) != 0) {
+  while (::flock(lock->descriptor.value, advisory ? LOCK_SH | LOCK_NB : LOCK_EX) != 0) {
+    if (advisory && errno == EWOULDBLOCK)
+      return absl::UnavailableError("Experiment catalog is being updated");
     if (errno != EINTR)
       return io_error("Cannot lock experiment store");
   }
@@ -752,7 +758,7 @@ absl::Status write_index(const StoreLock& lock, const StitchingExperimentStore& 
   return hm::game_storage::RefreshManifest(store.game_directory, "stitching-experiments");
 }
 
-absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimentStore& store) {
+absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimentStore& store, bool advisory = false) {
   std::string text;
   HM_ASSIGN_OR_RETURN(
       text,
@@ -774,9 +780,11 @@ absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimen
     require(
         session_sequences.emplace(record.workspace.root, record.sequence).second,
         "Duplicate experiment sequence within one session");
-    auto directory = open_workspace(lock, store, record.workspace.game_directory);
-    if (!directory.ok())
-      return directory.status();
+    if (!advisory) {
+      auto directory = open_workspace(lock, store, record.workspace.game_directory);
+      if (!directory.ok())
+        return directory.status();
+    }
     index.catalog.experiments.push_back(std::move(record));
   }
   for (const auto& record : index.catalog.experiments) {
@@ -895,13 +903,15 @@ absl::StatusOr<StitchingExperimentStore> OpenStitchingExperimentStore(const fs::
   }
 }
 
-absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const StitchingExperimentStore& store) {
+absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(
+    const StitchingExperimentStore& store,
+    bool advisory) {
   try {
-    auto lock = acquire(store);
+    auto lock = acquire(store, /*validate_owner=*/true, /*create=*/false, /*allow_pending_discard=*/false, advisory);
     if (!lock.ok())
       return lock.status();
     Index index;
-    HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
+    HM_ASSIGN_OR_RETURN(index, read_index(**lock, store, advisory));
     return std::move(index.catalog);
   } catch (const std::exception& error) {
     return invalid_catalog(error);
