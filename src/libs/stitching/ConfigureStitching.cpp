@@ -5581,11 +5581,61 @@ absl::StatusOr<fs::path> create_mask_scratch(const fs::path& root) {
   return input_dir; // mkdtemp creates this directory with mode 0700.
 }
 
-cv::Mat combine_rink_masks(const std::vector<cv::Mat>& masks) {
-  cv::Mat combined = masks.front().clone();
-  for (size_t i = 1; i < masks.size(); ++i)
-    cv::bitwise_or(combined, masks[i], combined);
-  return combined;
+// Fill the round-capped segment covered by the preview brush. OpenCV's thick line
+// rounds odd diameters up and draws both edge pixels, making an eraser wider than its cursor.
+void draw_ice_brush_segment(
+    cv::Mat& mask,
+    cv::Mat* erased,
+    cv::Size preview,
+    cv::Point start,
+    cv::Point end,
+    int diameter,
+    uint8_t value) {
+  const cv::Point2d a(start.x + .5, start.y + .5), b(end.x + .5, end.y + .5), delta = b - a;
+  const double radius = diameter / 2.;
+  const double length = cv::norm(delta);
+  const cv::Point2d normal = length ? cv::Point2d(-delta.y, delta.x) * (radius / length) : cv::Point2d();
+  const double scale_x = static_cast<double>(mask.cols) / preview.width;
+  const double scale_y = static_cast<double>(mask.rows) / preview.height;
+  // Native samples lie at half-integers. Half-open spans give an even-width brush a consistent edge.
+  auto first_pixel = [](double edge, double scale, int limit) {
+    return std::clamp(static_cast<int>(std::ceil(edge * scale - .5)), 0, limit);
+  };
+  const int first_y = first_pixel(std::min(a.y, b.y) - radius, scale_y, mask.rows);
+  const int end_y = first_pixel(std::max(a.y, b.y) + radius, scale_y, mask.rows);
+  for (int row = first_y; row < end_y; ++row) {
+    const double y = (row + .5) / scale_y;
+    double left = std::numeric_limits<double>::infinity(), right = -left;
+    // A horizontal slice of a capsule is one span bounded by its round caps or straight sides.
+    for (const auto& center : {a, b}) {
+      const double dy = y - center.y;
+      if (std::abs(dy) <= radius) {
+        const double dx = std::sqrt(radius * radius - dy * dy);
+        left = std::min(left, center.x - dx);
+        right = std::max(right, center.x + dx);
+      }
+    }
+    if (delta.y != 0) {
+      for (const auto& side : {a + normal, a - normal}) {
+        const double t = (y - side.y) / delta.y;
+        if (t >= 0 && t <= 1) {
+          const double x = side.x + t * delta.x;
+          left = std::min(left, x);
+          right = std::max(right, x);
+        }
+      }
+    }
+    if (left >= right)
+      continue;
+    const int begin = first_pixel(left, scale_x, mask.cols);
+    const int end = first_pixel(right, scale_x, mask.cols);
+    auto* pixels = mask.ptr<uint8_t>(row);
+    std::fill(pixels + begin, pixels + end, value);
+    if (erased) {
+      auto* pixels_erased = erased->ptr<uint8_t>(row);
+      std::fill(pixels_erased + begin, pixels_erased + end, 255);
+    }
+  }
 }
 
 absl::Status paint_detected_rink_mask(
@@ -5600,7 +5650,8 @@ absl::Status paint_detected_rink_mask(
   cv::resize(stitched, preview, size, 0, 0, cv::INTER_AREA);
   if (!cv::imwrite((staging / "paint-source.png").string(), preview))
     return absl::InternalError("Cannot write the ice mask source preview");
-  cv::resize(profile.combined_mask, ice, size, 0, 0, cv::INTER_NEAREST);
+  // Playback reads rink_mask_0.png. Secondary detections contribute only to the combined geometry.
+  cv::resize(profile.masks.front(), ice, size, 0, 0, cv::INTER_NEAREST);
   cv::Mat tinted;
   cv::addWeighted(preview, .65, cv::Mat(size, preview.type(), cv::Scalar(80, 220, 60)), .35, 0., tinted);
   tinted.copyTo(preview, ice);
@@ -5632,7 +5683,6 @@ absl::Status paint_detected_rink_mask(
       if (!(stroke >> diameter) || diameter == 0 || diameter < -128 || diameter > 128)
         return absl::InvalidArgumentError("Invalid ice brush diameter");
       const bool erase = diameter < 0;
-      const int width = std::clamp(cvRound(std::abs(diameter) / scale), 1, 32767);
       if (erase && profile.masks.size() > 1 && erased.empty())
         erased = cv::Mat::zeros(edited.size(), CV_8U);
       cv::Point previous;
@@ -5641,12 +5691,15 @@ absl::Status paint_detected_rink_mask(
         int x, y;
         if (!(stroke >> x >> y) || x < 0 || x >= size.width || y < 0 || y >= size.height || ++points > 12000)
           return absl::InvalidArgumentError("Invalid ice brush position or too many points");
-        const cv::Point point(
-            std::clamp(cvRound((x + .5) * stitched.cols / size.width - .5), 0, stitched.cols - 1),
-            std::clamp(cvRound((y + .5) * stitched.rows / size.height - .5), 0, stitched.rows - 1));
-        cv::line(edited, first ? point : previous, point, cv::Scalar(erase ? 0 : 255), width);
-        if (erase && !erased.empty())
-          cv::line(erased, first ? point : previous, point, cv::Scalar(255), width);
+        const cv::Point point(x, y);
+        draw_ice_brush_segment(
+            edited,
+            erase && !erased.empty() ? &erased : nullptr,
+            size,
+            first ? point : previous,
+            point,
+            std::abs(diameter),
+            erase ? 0 : 255);
         previous = point;
         first = false;
       }
@@ -5655,6 +5708,8 @@ absl::Status paint_detected_rink_mask(
     }
     if (points == 0)
       return absl::InvalidArgumentError("No ice brush strokes supplied");
+    if (cv::countNonZero(edited) == 0)
+      return absl::InvalidArgumentError("The edited rink mask contains no ice");
     bool changed = cv::norm(edited, profile.masks.front(), cv::NORM_INF) != 0;
     profile.masks.front() = std::move(edited);
     if (!erased.empty()) {
@@ -5666,10 +5721,10 @@ absl::Status paint_detected_rink_mask(
     }
     if (!changed)
       return absl::OkStatus();
-    profile.combined_mask = combine_rink_masks(profile.masks);
+    profile.combined_mask = profile.masks.front().clone();
+    for (size_t i = 1; i < profile.masks.size(); ++i)
+      cv::bitwise_or(profile.combined_mask, profile.masks[i], profile.combined_mask);
     profile.combined_bbox = cv::boundingRect(profile.combined_mask);
-    if (profile.combined_bbox.empty())
-      return absl::InvalidArgumentError("The edited rink mask contains no ice");
     profile.centroid = rink_contour_centroid(profile.masks);
     return absl::OkStatus();
   }
@@ -5789,7 +5844,6 @@ absl::Status review_saved_field_mask(
       HM_ASSIGN_OR_RETURN(mask, decode(state / ("rink_mask_" + std::to_string(index) + ".png"), cv::IMREAD_GRAYSCALE));
       profile.masks.push_back(std::move(mask));
     }
-    profile.combined_mask = combine_rink_masks(profile.masks);
     const auto center = snapshot["ice_contours_mask_centroid"].as<std::vector<double>>();
     const auto bbox = snapshot["ice_contours_combined_bbox"].as<std::vector<double>>();
     if (center.size() != 2 || bbox.size() != 4)
