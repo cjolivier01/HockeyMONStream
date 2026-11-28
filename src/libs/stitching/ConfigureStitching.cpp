@@ -13,6 +13,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/Orientation.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/RinkMaskBrush.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
@@ -5589,9 +5590,12 @@ absl::Status paint_detected_rink_mask(
   // This is the one still already read for segmentation. All video frames remain on their existing GPU path.
   const double scale = std::min({1., 1600. / stitched.cols, 900. / stitched.rows});
   const cv::Size size(std::max(1, cvRound(stitched.cols * scale)), std::max(1, cvRound(stitched.rows * scale)));
-  cv::Mat preview, ice;
+  cv::Mat preview;
   cv::resize(stitched, preview, size, 0, 0, cv::INTER_AREA);
-  cv::resize(profile.masks.front(), ice, size, 0, 0, cv::INTER_NEAREST);
+  if (!cv::imwrite((staging / "paint-source.png").string(), preview))
+    return absl::InternalError("Cannot write the ice mask source preview");
+  // Playback reads rink_mask_0.png. Secondary detections contribute only to the combined geometry.
+  const cv::Mat ice = SampleIceBrushPreview(profile.masks.front(), size);
   cv::Mat tinted;
   cv::addWeighted(preview, .65, cv::Mat(size, preview.type(), cv::Scalar(80, 220, 60)), .35, 0., tinted);
   tinted.copyTo(preview, ice);
@@ -5611,27 +5615,35 @@ absl::Status paint_detected_rink_mask(
       return response.status();
     if (*response == "keep\n")
       return absl::OkStatus();
-    // Each line is a round stroke in integer preview pixel coordinates.
+    // Preview-pixel strokes are applied in order. A negative diameter erases ice.
     std::istringstream input(*response);
     std::string line;
     size_t points = 0;
-    const int original_ice_pixels = cv::countNonZero(profile.masks.front());
+    cv::Mat edited = profile.masks.front().clone();
+    cv::Mat erased; // Other detection layers receive only erasures.
     while (std::getline(input, line)) {
       std::istringstream stroke(line);
       int diameter;
-      if (!(stroke >> diameter) || diameter < 1 || diameter > 128)
+      if (!(stroke >> diameter) || diameter == 0 || diameter < -128 || diameter > 128)
         return absl::InvalidArgumentError("Invalid ice brush diameter");
+      const bool erase = diameter < 0;
+      if (erase && profile.masks.size() > 1 && erased.empty())
+        erased = cv::Mat::zeros(edited.size(), CV_8U);
       cv::Point previous;
       bool first = true;
       for (stroke >> std::ws; !stroke.eof(); stroke >> std::ws) {
         int x, y;
         if (!(stroke >> x >> y) || x < 0 || x >= size.width || y < 0 || y >= size.height || ++points > 12000)
           return absl::InvalidArgumentError("Invalid ice brush position or too many points");
-        const cv::Point point(
-            std::clamp(cvRound((x + .5) * stitched.cols / size.width - .5), 0, stitched.cols - 1),
-            std::clamp(cvRound((y + .5) * stitched.rows / size.height - .5), 0, stitched.rows - 1));
-        const int width = std::clamp(cvRound(diameter / scale), 1, 32767);
-        cv::line(profile.masks.front(), first ? point : previous, point, cv::Scalar(255), width);
+        const cv::Point point(x, y);
+        DrawIceBrushSegment(
+            edited,
+            erase && !erased.empty() ? &erased : nullptr,
+            size,
+            first ? point : previous,
+            point,
+            std::abs(diameter),
+            erase ? 0 : 255);
         previous = point;
         first = false;
       }
@@ -5640,7 +5652,18 @@ absl::Status paint_detected_rink_mask(
     }
     if (points == 0)
       return absl::InvalidArgumentError("No ice brush strokes supplied");
-    if (cv::countNonZero(profile.masks.front()) == original_ice_pixels)
+    if (cv::countNonZero(edited) == 0)
+      return absl::InvalidArgumentError("The edited rink mask contains no ice");
+    bool changed = cv::norm(edited, profile.masks.front(), cv::NORM_INF) != 0;
+    profile.masks.front() = std::move(edited);
+    if (!erased.empty()) {
+      for (size_t i = 1; i < profile.masks.size(); ++i) {
+        auto& mask = profile.masks[i];
+        changed = changed || cv::norm(mask, cv::NORM_INF, erased) != 0;
+        mask.setTo(0, erased);
+      }
+    }
+    if (!changed)
       return absl::OkStatus();
     profile.combined_mask = profile.masks.front().clone();
     for (size_t i = 1; i < profile.masks.size(); ++i)

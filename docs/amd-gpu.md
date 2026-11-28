@@ -1527,9 +1527,9 @@ Ownership Request stop and explicit force release use the abort path, never grac
 
 ### Manual ice mask review
 
-AMD Program can review its existing saved calibration when **Paint missed ice
+AMD Program can review its existing saved calibration when **Edit rink mask
 after detection** is enabled. It displays the saved stitched still, uses the
-same brush and mask publication as the NVIDIA calibrator, and loads the
+same Paint and Erase brushes and mask publication as the NVIDIA calibrator, and loads the
 accepted full-resolution mask for player filtering. AMD Program still needs
 saved alignment and a valid detected mask for the current output geometry.
 

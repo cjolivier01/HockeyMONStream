@@ -7,6 +7,7 @@
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/stitching/RinkMaskBrush.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 
@@ -78,6 +79,26 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 int main() {
   ::setenv("HM_TEST_FORCE_TRANSACTION_RECOVERY_SCAN", "1", 1);
   bool ok = true;
+  {
+    // At 4:1 the top-left pixel in a native block is outside a one-pixel preview brush.
+    const cv::Size preview(20, 15);
+    const cv::Point point(2, 2);
+    cv::Mat mask = cv::Mat::zeros(60, 80, CV_8U);
+    mask.at<uint8_t>(8, 8) = 255;
+    auto sample = [&] { return hm::stitching::SampleIceBrushPreview(mask, preview).at<uint8_t>(point); };
+    ok &= expect(sample() == 0, "the brush preview samples the native center, not the corner of its block");
+    for (const cv::Size size : {cv::Size(80, 60), cv::Size(24, 18)}) {
+      mask = cv::Mat::zeros(size, CV_8U);
+      for (const uint8_t value : {255, 0}) {
+        hm::stitching::DrawIceBrushSegment(mask, nullptr, preview, point, point, 1, value);
+        ok &= expect(sample() == value, "painting and erasing one preview pixel must change its displayed sample");
+        hm::stitching::DrawIceBrushSegment(mask, nullptr, preview, {2, 12}, {12, 2}, 1, value);
+        const auto scaled = hm::stitching::SampleIceBrushPreview(mask, preview);
+        for (int x = 2; x <= 12; ++x)
+          ok &= expect(scaled.at<uint8_t>(14 - x, x) == value, "thin diagonal strokes must retain their centerline");
+      }
+    }
+  }
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / ("field-mask-persistence-test-" + std::to_string(::getpid()));
   fs::create_directories(root);
@@ -1544,7 +1565,7 @@ int main() {
         std::cerr << published << '\n';
       ok &= expect(published.ok(), "timed mask publication adopts the retained input");
       ::setenv("HSTREAM_RINK_MASK_PAINT_FLOW", "1", 1);
-      auto review = [&](std::string reply, bool saved) {
+      auto review = [&](std::string reply, bool saved, cv::Mat* preview = nullptr) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
         auto cancelled = [&]() {
           for (const auto& entry : fs::directory_iterator(saved_state(timed))) {
@@ -1552,8 +1573,11 @@ int main() {
                 !fs::exists(entry.path() / "paint-preview.png"))
               continue;
             const auto response = entry.path() / ".rink-mask-paint-response";
-            if (!fs::exists(response))
+            if (!fs::exists(response)) {
+              if (preview)
+                *preview = cv::imread((entry.path() / "paint-preview.png").string());
               std::ofstream(response) << reply;
+            }
           }
           return std::chrono::steady_clock::now() > deadline;
         };
@@ -1581,6 +1605,28 @@ int main() {
       ok &= expect(
           review("3 0 0\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(255, 0),
           "fresh inference must discard all strokes from the previous detection");
+      // Move one pixel of detected ice to a corner. Equal area still changes the bounds and centroid.
+      ok &= expect(review("-1 4 4\n1 0 0\n", false), "publish a mixed paint and erase draft");
+      const auto edited = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      const auto edited_rink = YAML::LoadFile((saved_state(timed) / "config.yaml").string())["rink"];
+      const auto expected_center = rink_contour_centroid({edited});
+      ok &= expect(
+          edited.at<uint8_t>(4, 4) == 0 && edited.at<uint8_t>(0, 0) == 255 &&
+              edited_rink["ice_contours_combined_bbox"].as<std::vector<int>>() == std::vector<int>({0, 0, 28, 20}) &&
+              edited_rink["ice_contours_mask_centroid"].as<std::vector<double>>() ==
+                  std::vector<double>({expected_center.x, expected_center.y}),
+          "equal-area edits must publish their actual geometry");
+      ok &= expect(
+          review("-5 4 4 27 4\n1 4 4\n1 0 0\n-1 0 0\n-3 10 12 22 12\n", false), "publish overlapping strokes in order");
+      const auto ordered = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      ok &= expect(
+          ordered.at<uint8_t>(4, 4) == 255 && ordered.at<uint8_t>(4, 12) == 0 && ordered.at<uint8_t>(0, 0) == 0,
+          "erase removes detected and newly painted ice; a later paint restores ice");
+      ok &= expect(
+          ordered.at<uint8_t>(10, 16) == 255 && ordered.at<uint8_t>(11, 16) == 0 && ordered.at<uint8_t>(13, 16) == 0 &&
+              ordered.at<uint8_t>(14, 16) == 255 && ordered.at<uint8_t>(12, 8) == 255 &&
+              ordered.at<uint8_t>(12, 9) == 0 && ordered.at<uint8_t>(12, 23) == 0 && ordered.at<uint8_t>(12, 24) == 255,
+          "a three-pixel eraser clears exactly three rows and retains its round caps");
       ok &= expect(
           review("keep\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(0, 0),
           "keeping a new detection publishes only the detected ice");
@@ -1602,6 +1648,43 @@ int main() {
       std::ofstream(config_path) << original;
       const auto mask_before_cancel =
           cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      ok &= expect(
+          !review("-128 12 12\n", false) && YAML::Dump(YAML::LoadFile(config_path.string())) == YAML::Dump(original) &&
+              cv::norm(
+                  mask_before_cancel,
+                  cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE),
+                  cv::NORM_INF) == 0,
+          "erasing the entire rink must preserve the last published mask and geometry");
+
+      // The preview and playback use layer zero. Secondary-only pixels still contribute to the combined geometry.
+      auto layered = YAML::Clone(original);
+      layered["rink"]["mask_frame"]["manually_reviewed"] = false;
+      layered["rink"]["ice_contours_mask_count"] = 2;
+      std::ofstream(config_path) << layered;
+      cv::Mat second_mask = mask_before_cancel.clone();
+      second_mask.at<uint8_t>(0, 0) = 255;
+      second_mask.at<uint8_t>(0, 1) = 255;
+      const auto second_path = saved_state(timed) / "rink_mask_1.png";
+      ok &= expect(cv::imwrite(second_path.string(), second_mask), "write the second detected ice layer");
+      ok &= expect(
+          !review("-32 16 12\n", true) &&
+              cv::norm(second_mask, cv::imread(second_path.string(), cv::IMREAD_GRAYSCALE), cv::NORM_INF) == 0,
+          "secondary-only ice cannot make an empty playback mask valid");
+      cv::Mat preview;
+      ok &= expect(review("-1 0 0\n-1 12 12\n1 12 12\n", true, &preview), "review overlapping saved detection layers");
+      const auto second_edited = cv::imread(second_path.string(), cv::IMREAD_GRAYSCALE);
+      const auto playback_mask = load_field_mask(timed.string(), *output);
+      ok &= expect(
+          second_edited.at<uint8_t>(0, 0) == 0 && second_edited.at<uint8_t>(12, 12) == 0 && playback_mask.ok() &&
+              playback_mask->at<uint8_t>(12, 12) == 255 && second_edited.at<uint8_t>(12, 13) == 255,
+          "erase removes ice from all layers and repaint restores only the new brush mark");
+      ok &= expect(
+          !preview.empty() && preview.at<cv::Vec3b>(0, 1) == cv::Vec3b(32, 64, 96) &&
+              preview.at<cv::Vec3b>(12, 12) != preview.at<cv::Vec3b>(0, 1) && second_edited.at<uint8_t>(0, 1) == 255 &&
+              playback_mask.ok() && playback_mask->at<uint8_t>(0, 1) == 0,
+          "the editor shows exactly the mask used by playback even with secondary-only ice");
+      fs::remove(second_path);
+      std::ofstream(config_path) << original;
       const auto cancelled = create_field_mask(
           timed.string(),
           writer,

@@ -5333,7 +5333,8 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const bool crop_stop_ignored = !fs::exists(staging_dir / ".projection-crop-response");
   HStreamWindowTestAccess::setPipelineStopRequested(window, false);
   QTemporaryDir paint(QString::fromStdString((game_dir / "_hockeymon/hstream-field-mask-input-XXXXXX").string()));
-  if (!paint.isValid() || !source.save(paint.filePath("paint-preview.png")))
+  if (!paint.isValid() || !source.save(paint.filePath("paint-preview.png")) ||
+      !source.save(paint.filePath("paint-source.png")))
     return expect(false, "Could not write the ice painting fixture");
   if (HStreamWindowTestAccess::receiveIceMaskPrompt(window, paint.path(), false))
     return expect(false, "Ice painting must be opt-in");
