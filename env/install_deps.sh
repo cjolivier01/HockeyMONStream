@@ -5,6 +5,7 @@ set -uo pipefail
 
 APT_PACKAGES=(
   curl
+  patchelf
   fonts-dejavu-core
   libva-dev
   libsoup-3.0-dev
