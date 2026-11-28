@@ -6322,11 +6322,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_control_help(
       show_leveling_dialog_check_,
       "Open rink leveling during stitching setup. Select goal-line corners by default, or mark vertical posts. Level rink remains available when unchecked.");
-  paint_rink_mask_check_ = new QCheckBox("Paint missed ice after detection");
+  paint_rink_mask_check_ = new QCheckBox("Edit rink mask after detection");
   paint_rink_mask_check_->setObjectName("paintRinkMaskCheck");
   set_control_help(
       paint_rink_mask_check_,
-      "Review the detected ice and paint missing areas before playback. A new detection starts with a clean brush layer.");
+      "Paint missed ice or erase false detections before playback. Each new detection starts a fresh edit.");
   for (QCheckBox* check :
        {gyro_sync_check_, show_crop_dialog_check_, show_leveling_dialog_check_, paint_rink_mask_check_})
     connect(check, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
@@ -17925,9 +17925,21 @@ void HStreamWindow::handleRinkMaskPaintOutput(const QString& line) {
     stopPipeline();
     return;
   }
+  QImage source;
+  const QFileInfo original(QDir(path).filePath("paint-source.png"));
+  // Older workers provide only the tinted still and support additive strokes.
+  if (original.exists() || original.isSymLink()) {
+    QImageReader sourceReader(original.filePath(), "png");
+    if (original.isSymLink() || !original.isFile() || sourceReader.size() != size ||
+        (source = sourceReader.read()).isNull()) {
+      appendLog("Invalid ice mask source preview. Stopping calibration.");
+      stopPipeline();
+      return;
+    }
+  }
   closeRinkMaskPaintDialog();
   auto* dialog =
-      new RinkMaskPaintDialog(image, calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this);
+      new RinkMaskPaintDialog(image, source, calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this);
   dialog->setProperty("paintDirectory", path);
   rink_mask_paint_dialog_ = dialog;
   connect(dialog, &QObject::destroyed, this, [this, dialog] {

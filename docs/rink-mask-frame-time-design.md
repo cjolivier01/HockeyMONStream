@@ -159,15 +159,17 @@ rink profile; it exercises actual decoding, GPU stitching, and publication
 without requiring rink segmentation model inference.
 
 
-## Painting missed ice
+## Editing the rink mask
 
-In **Stitched → Rink**, enable **Paint missed ice after detection**. The setting
+In **Stitched → Rink**, enable **Edit rink mask after detection**. The setting
 is saved in Defaults or the game preset as `hstream_ui.paint_rink_mask`. The
 next interactive calibration or Program run asks for a review when it needs a
 mask or encounters an older automatic mask. Green shows the detected ice.
-Click to add a circular spot, or drag to paint a stroke. Brush diameter is in
-preview pixels. Undo removes the last stroke. **Apply painted mask** accepts
-the additions. **Use detected mask** discards the draft and accepts detection.
+Choose **Paint** to add ice or **Erase** to remove detected or painted ice.
+Click for a spot or drag for a stroke. Erasing reveals the original stitched
+image. Both modes use the same diameter in preview pixels. **Undo stroke**
+reverses the last edit. **Apply mask** saves the edits in stroke order.
+The saved mask must contain some ice. **Use detected mask** discards the draft and accepts detection.
 
 Each review belongs to one detection attempt. Starting another detection
 retires the old editor even when the source frame and stitched dimensions

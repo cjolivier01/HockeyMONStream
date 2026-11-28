@@ -1581,6 +1581,22 @@ int main() {
       ok &= expect(
           review("3 0 0\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(255, 0),
           "fresh inference must discard all strokes from the previous detection");
+      // Move one pixel of detected ice to a corner. Equal area still changes the bounds and centroid.
+      ok &= expect(review("-1 4 4\n1 0 0\n", false), "publish a mixed paint and erase draft");
+      const auto edited = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      const auto edited_rink = YAML::LoadFile((saved_state(timed) / "config.yaml").string())["rink"];
+      const auto expected_center = rink_contour_centroid({edited});
+      ok &= expect(
+          edited.at<uint8_t>(4, 4) == 0 && edited.at<uint8_t>(0, 0) == 255 &&
+              edited_rink["ice_contours_combined_bbox"].as<std::vector<int>>() == std::vector<int>({0, 0, 28, 20}) &&
+              edited_rink["ice_contours_mask_centroid"].as<std::vector<double>>() ==
+                  std::vector<double>({expected_center.x, expected_center.y}),
+          "equal-area edits must publish their actual geometry");
+      ok &= expect(review("-5 4 4 27 4\n1 4 4\n1 0 0\n-1 0 0\n", false), "publish overlapping strokes in order");
+      const auto ordered = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      ok &= expect(
+          ordered.at<uint8_t>(4, 4) == 255 && ordered.at<uint8_t>(4, 12) == 0 && ordered.at<uint8_t>(0, 0) == 0,
+          "erase removes detected and newly painted ice; a later paint restores ice");
       ok &= expect(
           review("keep\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(0, 0),
           "keeping a new detection publishes only the detected ice");
@@ -1602,6 +1618,32 @@ int main() {
       std::ofstream(config_path) << original;
       const auto mask_before_cancel =
           cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      ok &= expect(
+          !review("-128 12 12\n", false) && YAML::Dump(YAML::LoadFile(config_path.string())) == YAML::Dump(original) &&
+              cv::norm(
+                  mask_before_cancel,
+                  cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE),
+                  cv::NORM_INF) == 0,
+          "erasing the entire rink must preserve the last published mask and geometry");
+
+      // Saved detections can have overlapping layers. Include one pixel unique to the second layer.
+      auto layered = YAML::Clone(original);
+      layered["rink"]["mask_frame"]["manually_reviewed"] = false;
+      layered["rink"]["ice_contours_mask_count"] = 2;
+      std::ofstream(config_path) << layered;
+      cv::Mat second_mask = mask_before_cancel.clone();
+      second_mask.at<uint8_t>(0, 0) = 255;
+      const auto second_path = saved_state(timed) / "rink_mask_1.png";
+      ok &= expect(cv::imwrite(second_path.string(), second_mask), "write the second detected ice layer");
+      ok &= expect(review("-1 0 0\n-1 12 12\n1 12 12\n", true), "review overlapping saved detection layers");
+      const auto second_edited = cv::imread(second_path.string(), cv::IMREAD_GRAYSCALE);
+      const auto first_edited = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      ok &= expect(
+          second_edited.at<uint8_t>(0, 0) == 0 && second_edited.at<uint8_t>(12, 12) == 0 &&
+              first_edited.at<uint8_t>(12, 12) == 255 && second_edited.at<uint8_t>(12, 13) == 255,
+          "erase removes ice from all layers and repaint restores only the new brush mark");
+      fs::remove(second_path);
+      std::ofstream(config_path) << original;
       const auto cancelled = create_field_mask(
           timed.string(),
           writer,
